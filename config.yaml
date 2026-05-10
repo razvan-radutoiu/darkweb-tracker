@@ -1,172 +1,85 @@
 # DarkWeb Forums Tracker — 配置文件
 # 环境变量优先级高于此文件中的所有配置项
+# workflow 只传 Secrets，所有业务配置在此统一管理
 
 # ── RSS 源加载策略 ────────────────────────────────────────────────────────────
-# 加载优先级（高→低）:
-#   1. 远程 sources.yaml（手动补充/覆盖）
-#   2. 本地 data_sources
-#   3. 自动发现（fastfire/deepdarkCTI，每次启动自动更新）
-#   4. 内置 seed（兜底）
 sources:
-  # 【核心功能】自动从 fastfire/deepdarkCTI 解析 ONLINE 论坛并探测 RSS
-  # 每次程序启动时自动拉取最新列表，无需手动维护
-  disable_auto_discover: false    # SOURCES_NO_AUTODISCOVER=true 可关闭
+  # 自动从 fastfire/deepdarkCTI 解析 ONLINE 论坛，自动探测 RSS 端点
+  # 每次启动拉取最新列表，发现新论坛自动纳入监控
+  disable_auto_discover: false
 
-  # 手动补充源（优先级最高，可覆盖自动发现的同名源）
-  # 留空 = 只用自动发现 + 内置 seed
-  remote_url: ""                  # SOURCES_REMOTE_URL
+  # 远程补充源（手动维护的额外列表，优先级最高）
+  remote_url: ""
 
-  # 健康检查（自动发现已内置探活；此项对手动补充源生效）
-  health_check: false             # SOURCES_HEALTH_CHECK=true
+  # 健康检查：关闭
+  # 原因：GitHub Actions runner 网络与论坛的连通性和实际用户不同，
+  # 频繁误判导致漏掉有效源。自动发现阶段已做过一次探活。
+  health_check: false
 
-  # 内置兜底 seed（自动发现失败时保底）
-  disable_builtin_seeds: false    # SOURCES_NO_SEEDS=true
+  # 保留内置 seed 兜底
+  disable_builtin_seeds: false
 
-# ── AI 分析配置 ─────────────────────────────────────────────────────────────
-# 使用 GitHub Models 内置 AI（无需付费，api_key 由 workflow 通过 LLM_API_KEY 注入）
-# 修改此处配置即可生效，workflow 不再覆盖这些值
+# ── AI 分析：关闭 ────────────────────────────────────────────────────────────
+# 直接输出原始报告，无 AI 评分
 llm:
-  enabled: true               # 开启 AI 分析（api_key 由 workflow 自动注入）
+  enabled: false
 
-  provider: "github-models"   # 仅用于日志标识
-
-  # GitHub Models 端点（固定值，不要修改）
-  base_url: "https://models.github.ai/inference"
-
-  api_key: ""                 # 由 workflow 通过 LLM_API_KEY=${{ secrets.GITHUB_TOKEN }} 注入
-
-  # 模型选择：
-  #   meta/llama-3.3-70b-instruct  — 无 Azure 内容过滤（推荐用于暗网内容）
-  #   openai/gpt-4o-mini           — 更快但有内容过滤
-  #   openai/gpt-4o                — 最高精度，消耗配额多
-  model: "meta/llama-3.3-70b-instruct"
-
-  # GitHub Models 免费层：Llama 约 1 RPM，必须保守设置
-  rpm: 1
-  rpm_burst: 1
-
-  # 串行分析（workers=1），避免并发触发 429
-  workers: 1
-
-  # score >= 此值 AND is_urgent=true 时立即推送告警
-  urgent_score_threshold: 8
-
-  # 日报只展示 TOP N 高价值条目
-  daily_top_n: 20
-
-  # 跳过已分析条目（重启后不重复消耗配额）
-  skip_analyzed_items: true
-
+# ── 推送渠道 ─────────────────────────────────────────────────────────────────
 push:
   dingtalk:
-    webhook: ""          # DINGTALK_WEBHOOK
-    secret_key: ""       # DINGTALK_SECRET
-    enabled: false       # DINGTALK_ENABLED=true
+    webhook: ""
+    secret_key: ""
+    enabled: false
 
   feishu:
-    webhook: ""          # FEISHU_WEBHOOK
-    enabled: false       # FEISHU_ENABLED=true
+    webhook: ""
+    enabled: false
 
   telegram:
-    token: ""            # TELEGRAM_TOKEN
-    chat_id: ""          # TELEGRAM_CHAT_ID
-    enabled: false       # TELEGRAM_ENABLED=true
+    token: ""
+    chat_id: ""
+    enabled: false
 
   discord:
-    webhook: ""          # DISCORD_WEBHOOK
-    enabled: true        # DISCORD_ENABLED=true
-    send_daily_report: false   # DISCORD_SEND_DAILY=true
-    send_normal_msg: true      # DISCORD_SEND_NORMAL=true
-    send_weekly_report: true   # DISCORD_SEND_WEEKLY=true
+    webhook: ""          # 由 workflow 通过 DISCORD_WEBHOOK secret 注入
+    enabled: false       # 由 workflow 根据 secret 是否配置自动判断
+    send_daily_report: false
+    send_normal_msg: true
+    send_weekly_report: true
 
+# ── 代理 ─────────────────────────────────────────────────────────────────────
 proxy:
-  enabled: false         # PROXY_ENABLED=true
-  http: ""               # HTTP_PROXY
-  https: ""              # HTTPS_PROXY
+  enabled: false
+  http: ""
+  https: ""
   no_proxy: "localhost,127.0.0.1"
 
+# ── 夜间休眠（本地运行时生效，GitHub Actions 已按时区调度） ──────────────────
 night_sleep:
-  enabled: true          # NIGHT_SLEEP_ENABLED=false
-  start_hour: 0          # Beijing time 00:00
-  end_hour: 7            # Beijing time 07:00
+  enabled: true
+  start_hour: 0   # 北京时间 00:00
+  end_hour: 7     # 北京时间 07:00
 
+# ── 报告 ─────────────────────────────────────────────────────────────────────
 daily_report:
-  enabled: true          # DAILY_REPORT_ENABLED=false
+  enabled: true   # 每次运行后生成当日 HTML 报告
 
 weekly_report:
-  enabled: true          # WEEKLY_REPORT_ENABLED=false
-  push_enabled: true     # WEEKLY_REPORT_PUSH_ENABLED=false
+  enabled: true
+  push_enabled: true
   push_time: "15:00"
-  push_day: 5            # 1=Mon … 7=Sun (5=Fri)
+  push_day: 5     # 5=周五
 
-# 轮询间隔，支持 Go duration 格式: 1h, 2h, 30m
-interval: "2h"           # POLL_INTERVAL=1h
+# ── 轮询间隔 ─────────────────────────────────────────────────────────────────
+interval: "2h"
 
-# RSS 数据源
-# 每个条目：name（展示名）+ rss_url（必填）+ enabled（默认 true）
-# 环境变量覆盖单个数据源: DATASOURCE_XFORUMS_ST=false
+# ── 本地补充数据源（自动发现之外的额外源）────────────────────────────────────
+# 自动发现已覆盖 deepdarkCTI 的所有 ONLINE 论坛，这里只需要填自动发现找不到的源
+# 格式：name + rss_url + enabled
 data_sources:
-  xforums_st:
-    name: "Xforums.st"
-    rss_url: "https://xforums.st/forums/-/index.rss"
-    enabled: true
-
-  gerki:
-    name: "gerki"
-    rss_url: "https://forum.gerki.ws/forums/-/index.rss"
-    enabled: true
-
-  blackbones:
-    name: "blackbones"
-    rss_url: "https://blackbones.net/forums/-/index.rss"
-    enabled: true
-
-  hard_tm:
-    name: "hard-tm"
-    rss_url: "https://hard-tm.su/forums/-/index.rss"
-    enabled: true
-
-  ascarding:
-    name: "ascarding"
-    rss_url: "https://ascarding.net/forums/-/index.rss"
-    enabled: true
-
-  htdark:
-    name: "htdark"
-    rss_url: "https://htdark.com/forums/-/index.rss"
-    enabled: true
-
-  niflheim:
-    name: "niflheim"
-    rss_url: "https://niflheim.world/forums/-/index.rss"
-    enabled: true
-
-  mipped:
-    name: "mipped"
-    rss_url: "https://mipped.com/f/forums/-/index.rss"
-    enabled: true
-
-  leakbase:
-    name: "leakbase"
-    rss_url: "https://leakbase.la/forums/-/index.rss"
-    enabled: true
-
-  dublikat:
-    name: "dublikat"
-    rss_url: "https://at.dublikat.club/forums/-/index.rss"
-    enabled: true
-
-  sinister:
-    name: "sinister"
-    rss_url: "https://sinister.ly/syndication.php?fid=9&limit=50"
-    enabled: false        # 默认关闭
-
-  cardforum:
-    name: "cardforum"
-    rss_url: "https://cardforum.cc/syndication.php?limit=50"
-    enabled: true
-
-  ipbmafia:
-    name: "ipbmafia"
-    rss_url: "https://ipbmafia.ru/rss/1-temy.xml/"
-    enabled: true
+  # ransomware.live 和 ransomwatch 由代码内置，无需在此配置
+  # 如需新增其他源，在此添加：
+  # my_custom_source:
+  #   name: "My Source"
+  #   rss_url: "https://example.com/feed.rss"
+  #   enabled: true

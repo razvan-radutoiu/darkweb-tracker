@@ -353,52 +353,160 @@ const htmlTmpl = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ .Title }}</title>
 <style>
-:root{--bg:#0a0e17;--fg:#00ff41;--fg2:#00e0ff;--card:#121721;--border:#2d3748}
+:root{--bg:#0a0e17;--fg:#00ff41;--fg2:#00e0ff;--card:#121721;--border:#2d3748;--hover:rgba(0,255,65,.06)}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Courier New',monospace;background:var(--bg);color:var(--fg2);max-width:1200px;margin:0 auto;padding:24px}
-header{border:1px solid var(--fg);padding:24px;text-align:center;margin-bottom:32px;box-shadow:0 0 20px rgba(0,255,65,.3)}
-h1{color:var(--fg);text-shadow:0 0 10px rgba(0,255,65,.5);font-size:2rem}
-.stats{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:32px}
-.stat-card{background:var(--card);border:1px solid var(--border);padding:16px 24px;flex:1;min-width:140px}
-.stat-label{font-size:.8rem;color:#6b7280;margin-bottom:4px}
-.stat-value{font-size:1.5rem;color:var(--fg);font-weight:700}
-table{width:100%;border-collapse:collapse;margin-bottom:32px}
-th{background:var(--card);color:var(--fg);padding:12px;border:1px solid var(--border);text-align:left}
-td{padding:10px 12px;border:1px solid var(--border);vertical-align:top}
-td a{color:var(--fg2);text-decoration:none}
+body{font-family:'Courier New',monospace;background:var(--bg);color:var(--fg2);max-width:1400px;margin:0 auto;padding:24px;min-height:100vh}
+/* Header */
+header{border:1px solid var(--fg);padding:20px 28px;text-align:center;margin-bottom:24px;box-shadow:0 0 20px rgba(0,255,65,.2)}
+h1{color:var(--fg);text-shadow:0 0 10px rgba(0,255,65,.4);font-size:1.8rem;margin-bottom:6px}
+.subtitle{color:var(--fg2);font-size:.9rem;opacity:.8}
+/* Stats */
+.stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.stat-card{background:var(--card);border:1px solid var(--border);padding:14px 20px;flex:1;min-width:120px;border-radius:4px}
+.stat-label{font-size:.75rem;color:#6b7280;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em}
+.stat-value{font-size:1.4rem;color:var(--fg);font-weight:700}
+/* Toolbar */
+.toolbar{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+.toolbar input,.toolbar select{background:var(--card);border:1px solid var(--border);color:var(--fg2);
+  padding:8px 12px;font-family:inherit;font-size:.85rem;border-radius:4px;outline:none;flex:1;min-width:160px}
+.toolbar input:focus,.toolbar select:focus{border-color:var(--fg)}
+.toolbar select option{background:var(--bg)}
+.count-badge{color:#6b7280;font-size:.8rem;white-space:nowrap}
+/* Table */
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;margin-bottom:24px;font-size:.85rem}
+th{background:var(--card);color:var(--fg);padding:10px 14px;border:1px solid var(--border);
+   text-align:left;position:sticky;top:0;z-index:1;white-space:nowrap}
+td{padding:9px 14px;border:1px solid var(--border);vertical-align:top;line-height:1.5}
+td.num{color:#6b7280;text-align:right;white-space:nowrap;width:50px}
+td.src{white-space:nowrap;color:var(--fg);font-size:.8rem}
+td.time{white-space:nowrap;color:#6b7280;font-size:.8rem}
+td a{color:var(--fg2);text-decoration:none;word-break:break-all}
 td a:hover{color:var(--fg);text-decoration:underline}
-tr:hover td{background:rgba(0,255,65,.04)}
-footer{margin-top:48px;text-align:center;color:#6b7280;font-size:.85rem}
+tr:hover td{background:var(--hover)}
+tr.hidden{display:none}
+/* Pagination */
+.pagination{display:flex;gap:8px;justify-content:center;align-items:center;margin:16px 0;flex-wrap:wrap}
+.pagination button{background:var(--card);border:1px solid var(--border);color:var(--fg2);
+  padding:6px 14px;font-family:inherit;font-size:.85rem;cursor:pointer;border-radius:4px}
+.pagination button:hover{border-color:var(--fg);color:var(--fg)}
+.pagination button.active{background:var(--fg);color:var(--bg);border-color:var(--fg);font-weight:700}
+.pagination button:disabled{opacity:.35;cursor:not-allowed}
+.page-info{color:#6b7280;font-size:.8rem}
+/* Footer */
+footer{margin-top:40px;text-align:center;color:#6b7280;font-size:.8rem;border-top:1px solid var(--border);padding-top:16px}
 </style>
 </head>
 <body>
 <header>
   <h1>{{ .Title }}</h1>
-  <p style="color:var(--fg2);margin-top:8px">最后更新：{{ .UpdateTime }}</p>
+  <p class="subtitle">最后更新：{{ .UpdateTime }}</p>
 </header>
 
 <div class="stats">
-  <div class="stat-card"><div class="stat-label">总条数</div><div class="stat-value">{{ .TotalCount }}</div></div>
+  <div class="stat-card"><div class="stat-label">总条数</div><div class="stat-value" id="total-count">{{ .TotalCount }}</div></div>
   {{ range $src, $cnt := .BySource }}
   <div class="stat-card"><div class="stat-label">{{ $src }}</div><div class="stat-value">{{ $cnt }}</div></div>
   {{ end }}
 </div>
 
-<table>
+<div class="toolbar">
+  <input type="text" id="search" placeholder="🔍 搜索标题..." oninput="filterTable()">
+  <select id="src-filter" onchange="filterTable()">
+    <option value="">全部来源</option>
+    {{ range $src, $cnt := .BySource }}
+    <option value="{{ $src }}">{{ $src }} ({{ $cnt }})</option>
+    {{ end }}
+  </select>
+  <span class="count-badge" id="filter-count"></span>
+</div>
+
+<div class="table-wrap">
+<table id="main-table">
 <thead><tr><th>#</th><th>标题</th><th>来源</th><th>发现时间</th></tr></thead>
 <tbody>
 {{ range $i, $it := .Items }}
-<tr>
-  <td>{{ inc $i }}</td>
-  <td><a href="{{ $it.Link }}" target="_blank" rel="noopener">{{ $it.Title }}</a></td>
-  <td>{{ $it.SiteName }}</td>
-  <td>{{ $it.CreatedAt.Format "2006-01-02 15:04" }}</td>
+<tr data-src="{{ $it.SiteName }}" data-title="{{ $it.Title }}">
+  <td class="num">{{ inc $i }}</td>
+  <td><a href="{{ $it.Link }}" target="_blank" rel="noopener noreferrer">{{ $it.Title }}</a></td>
+  <td class="src">{{ $it.SiteName }}</td>
+  <td class="time">{{ $it.CreatedAt.Format "01-02 15:04" }}</td>
 </tr>
 {{ end }}
 </tbody>
 </table>
+</div>
 
-<footer><p>Power By DarkWeb Forums Tracker</p></footer>
+<div class="pagination" id="pagination"></div>
+<p class="page-info" id="page-info" style="text-align:center;color:#6b7280;font-size:.8rem;margin-top:8px"></p>
+
+<footer><p>DarkWeb Forums Tracker · {{ .TotalCount }} 条记录 · {{ .Date }}</p></footer>
+
+<script>
+const PAGE_SIZE = 100;
+let currentPage = 1;
+let visibleRows = [];
+
+function filterTable() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const src = document.getElementById('src-filter').value;
+  const rows = document.querySelectorAll('#main-table tbody tr');
+  visibleRows = [];
+  rows.forEach(r => {
+    const title = r.dataset.title.toLowerCase();
+    const rsrc  = r.dataset.src;
+    const show  = (!q || title.includes(q)) && (!src || rsrc === src);
+    r.classList.toggle('hidden', !show);
+    if (show) visibleRows.push(r);
+  });
+  document.getElementById('filter-count').textContent =
+    visibleRows.length < rows.length ? visibleRows.length + ' 条匹配' : '';
+  currentPage = 1;
+  paginate();
+}
+
+function paginate() {
+  const total = visibleRows.length;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  currentPage = Math.min(currentPage, pages);
+  const start = (currentPage - 1) * PAGE_SIZE;
+  const end   = Math.min(start + PAGE_SIZE, total);
+
+  visibleRows.forEach((r, i) => {
+    r.style.display = (i >= start && i < end) ? '' : 'none';
+  });
+
+  // Pagination buttons
+  const pg = document.getElementById('pagination');
+  pg.innerHTML = '';
+  const btn = (label, page, disabled, active) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (disabled) b.disabled = true;
+    if (active) b.classList.add('active');
+    b.onclick = () => { currentPage = page; paginate(); };
+    return b;
+  };
+  pg.appendChild(btn('«', 1, currentPage===1));
+  pg.appendChild(btn('‹', currentPage-1, currentPage===1));
+
+  let lo = Math.max(1, currentPage-2), hi = Math.min(pages, lo+4);
+  lo = Math.max(1, hi-4);
+  for (let p=lo; p<=hi; p++) pg.appendChild(btn(p, p, false, p===currentPage));
+
+  pg.appendChild(btn('›', currentPage+1, currentPage===pages));
+  pg.appendChild(btn('»', pages, currentPage===pages));
+
+  document.getElementById('page-info').textContent =
+    total > 0 ? '第 ' + currentPage + ' / ' + pages + ' 页，共 ' + total + ' 条' : '无匹配结果';
+}
+
+// Init
+document.addEventListener('DOMContentLoaded', () => {
+  visibleRows = Array.from(document.querySelectorAll('#main-table tbody tr'));
+  paginate();
+});
+</script>
 </body>
 </html>`
 
