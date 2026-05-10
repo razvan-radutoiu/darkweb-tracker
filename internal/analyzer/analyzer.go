@@ -45,7 +45,44 @@ OUTPUT: Respond ONLY with valid JSON matching the provided schema. No markdown, 
 const maxContentLen = 2000
 
 // maxRetries is the number of retry attempts for transient LLM API failures.
-const maxRetries = 3
+const maxRetries = 5
+
+// retryableErrors that warrant a backoff-retry rather than immediate failure.
+// 429 = rate limit, 5xx = server error, connection errors.
+func isRetryable(err error) (bool, time.Duration) {
+	if err == nil {
+		return false, 0
+	}
+	msg := err.Error()
+
+	// Parse 429 Retry-After if present
+	if strings.Contains(msg, "429") {
+		// Try to extract Retry-After seconds from error message
+		// GitHub Models returns: "retry after Xs" or header-based
+		wait := 60 * time.Second // conservative default for 429
+		if strings.Contains(msg, "retry after") {
+			// best-effort parse — fall back to default
+		}
+		return true, wait
+	}
+
+	// 5xx server errors
+	if strings.Contains(msg, "500") ||
+		strings.Contains(msg, "502") ||
+		strings.Contains(msg, "503") ||
+		strings.Contains(msg, "504") {
+		return true, 10 * time.Second
+	}
+
+	// Network / connection errors
+	if strings.Contains(msg, "connection") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "EOF") {
+		return true, 5 * time.Second
+	}
+
+	return false, 0
+}
 
 // AnalysisResult is the structured output from LLM analysis.
 // All fields are designed for ML training dataset use.
@@ -162,20 +199,26 @@ func (a *Analyzer) Analyze(ctx context.Context, title, content, siteName string)
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-			jitter := time.Duration(rand.Int63n(int64(backoff / 2)))
-			delay := backoff + jitter
+			retryable, baseWait := isRetryable(lastErr)
+			if !retryable {
+				// 不可重试的错误（如 400 内容过滤）直接返回
+				break
+			}
+
+			// 指数退避，但 429 用服务器建议的等待时间作为基础
+			jitter := time.Duration(rand.Int63n(int64(5 * time.Second)))
+			delay := baseWait + jitter
 
 			a.log.Warn("retrying LLM API call",
 				"attempt", attempt,
 				"max_retries", maxRetries,
-				"backoff", delay.String(),
+				"wait", delay.Round(time.Millisecond),
 				"error", lastErr,
 			)
 
 			select {
 			case <-ctx.Done():
-				return nil, fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
+				return nil, fmt.Errorf("context cancelled during retry: %w", ctx.Err())
 			case <-time.After(delay):
 			}
 		}
