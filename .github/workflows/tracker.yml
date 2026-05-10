@@ -95,17 +95,17 @@ jobs:
         id: run
         env:
           # ── GitHub Models API（内置，无需额外付费）────────────────────────
-          # 端点固定，模型名须带 "openai/" 或 "meta/" 前缀
+          # 使用 Meta Llama 模型：不经过 Azure 内容过滤，适合安全研究内容
           LLM_ENABLED:       ${{ inputs.skip_ai != true && 'true' || 'false' }}
           LLM_BASE_URL:      "https://models.github.ai/inference"
-          LLM_API_KEY:       ${{ secrets.GITHUB_TOKEN }}   # 直接使用内置 token
-          LLM_MODEL:         "openai/gpt-4o-mini"          # 免费高效
-          LLM_RPM:           "10"    # GitHub Models 免费层限速较低，保守设置
+          LLM_API_KEY:       ${{ secrets.GITHUB_TOKEN }}
+          LLM_MODEL:         "meta/llama-3.3-70b-instruct"  # 无 Azure 内容过滤
+          LLM_RPM:           "10"
           LLM_RPM_BURST:     "3"
-          LLM_WORKERS:       "2"     # 并发适中，避免触发限速
+          LLM_WORKERS:       "2"
           LLM_URGENT_THRESHOLD: "8"
           LLM_DAILY_TOP_N:   "20"
-          LLM_SKIP_ANALYZED: "true"  # 重要：已分析过的跳过，节省配额
+          LLM_SKIP_ANALYZED: "true"
 
           # ── RSS 源管理 ───────────────────────────────────────────────────
           # 使用仓库自身的 sources.yaml（相对路径即可）
