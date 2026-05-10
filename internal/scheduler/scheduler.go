@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"darkweb-tracker/internal/analyzer"
@@ -19,7 +20,7 @@ import (
 // Scheduler orchestrates polling, deduplication, AI analysis, notification, and reporting.
 type Scheduler struct {
 	cfg       *config.Config
-	sources   []config.DataSource // resolved at startup (remote + local + seeds)
+	sources   []config.DataSource
 	fetcher   *feed.Fetcher
 	db        *storage.DB
 	notifier  *notify.Multi
@@ -28,8 +29,6 @@ type Scheduler struct {
 	log       *slog.Logger
 }
 
-// New creates a Scheduler. Pass nil for az to disable AI analysis.
-// sources is the resolved feed list from sources.Loader (may differ from cfg.DataSources).
 func New(
 	cfg *config.Config,
 	sources []config.DataSource,
@@ -41,54 +40,68 @@ func New(
 	log *slog.Logger,
 ) *Scheduler {
 	return &Scheduler{
-		cfg:       cfg,
-		sources:   sources,
-		fetcher:   fetcher,
-		db:        db,
-		notifier:  notifier,
-		generator: gen,
-		analyzer:  az,
-		log:       log,
+		cfg: cfg, sources: sources, fetcher: fetcher,
+		db: db, notifier: notifier, generator: gen,
+		analyzer: az, log: log,
 	}
 }
 
-// RunOnce executes one full poll cycle:
-//  1. Fetch all enabled RSS sources
-//  2. Deduplicate via DB
-//  3. AI analysis (if enabled) — urgent items push immediately
-//  4. Generate daily / weekly reports
+// RunOnce 执行一次完整采集周期：
+//
+//  1. 并行抓取所有 RSS 源
+//  2. 全部去重入库
+//  3. 对所有新条目一次性批量 AI 分析
+//  4. 紧急条目立即推送
+//  5. 生成日报 / 周报
 func (s *Scheduler) RunOnce(ctx context.Context) error {
-	s.log.Info("starting poll cycle", "sources", len(s.sources))
+	start := time.Now()
+	s.log.Info("poll cycle start", "sources", len(s.sources))
 
-	for _, ds := range s.sources {
-		if err := ctx.Err(); err != nil {
-			return err
+	// ── Phase 1: 并行抓取所有源 ──────────────────────────────────────────────
+	allNew := s.fetchAllSources(ctx)
+	s.log.Info("fetch complete",
+		"new_items", len(allNew),
+		"elapsed", time.Since(start).Round(time.Millisecond),
+	)
+
+	// ── Phase 2: 一次性批量 AI 分析 ──────────────────────────────────────────
+	if len(allNew) > 0 {
+		if s.analyzer != nil && s.cfg.LLM.Enabled {
+			s.batchAnalyzeAndNotify(ctx, allNew)
+		} else {
+			// 无 AI：直接推送每条新数据
+			for _, item := range allNew {
+				s.notifier.Send(ctx, notify.Message{
+					Title:    item.SiteName + " 新增数据泄露",
+					Body:     item.Title,
+					Link:     item.Link,
+					SiteName: item.SiteName,
+					Kind:     notify.KindNormal,
+				})
+			}
 		}
-		s.pollSource(ctx, ds)
 	}
 
-	// Flush any urgent items that haven't been notified yet.
-	// (Covers items that became urgent in previous cycles too.)
-	if s.analyzer != nil {
+	// ── Phase 3: 补推遗漏的紧急项 ────────────────────────────────────────────
+	if s.analyzer != nil && s.cfg.LLM.Enabled {
 		s.pushPendingUrgent(ctx)
 	}
 
-	// Daily report.
+	// ── Phase 4: 报告 ─────────────────────────────────────────────────────────
 	if s.cfg.DailyReport.Enabled {
 		s.generateDaily(ctx)
 	}
-
-	// Weekly report — only on the configured weekday.
 	if s.cfg.WeeklyReport.Enabled && isWeeklyDay(s.cfg.WeeklyReport.PushDay) {
 		s.generateWeekly(ctx)
 	}
 
-	s.log.Info("poll cycle complete")
+	s.log.Info("poll cycle complete",
+		"new_items", len(allNew),
+		"total_elapsed", time.Since(start).Round(time.Millisecond),
+	)
 	return nil
 }
 
-// Run loops indefinitely, calling RunOnce every cfg.Interval.
-// Returns when ctx is cancelled.
 func (s *Scheduler) Run(ctx context.Context) error {
 	s.notifier.Send(ctx, notify.Message{
 		Title: "DarkWeb Forums Tracker 已启动",
@@ -99,7 +112,6 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	ticker := time.NewTicker(s.cfg.Interval)
 	defer ticker.Stop()
 
-	// Run immediately on start.
 	if err := s.RunOnce(ctx); err != nil {
 		s.log.Error("initial run failed", "err", err)
 	}
@@ -122,16 +134,65 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 // ---------------------------------------------------------------------------
-// Core polling — fetch → dedup → insert → (optional) analyze → notify
+// Phase 1: 并行抓取所有源，返回全部新条目
 // ---------------------------------------------------------------------------
 
-func (s *Scheduler) pollSource(ctx context.Context, ds config.DataSource) {
-	items, err := s.fetcher.Fetch(ctx, ds)
-	if err != nil {
-		s.log.Warn("fetch failed", "source", ds.Name, "err", err)
-		return
+// fetchAllSources 并发抓取所有启用的 RSS 源，聚合去重后的新条目。
+// 各源之间完全并行，fetch 耗时取决于最慢的那个源，而不是所有源之和。
+func (s *Scheduler) fetchAllSources(ctx context.Context) []storage.Item {
+	type result struct {
+		items []storage.Item
+		err   error
+		name  string
 	}
 
+	results := make(chan result, len(s.sources))
+	var wg sync.WaitGroup
+
+	for _, ds := range s.sources {
+		wg.Add(1)
+		go func(src config.DataSource) {
+			defer wg.Done()
+			items, err := s.fetcher.Fetch(ctx, src)
+			results <- result{items: items, err: err, name: src.Name}
+		}(ds)
+	}
+
+	// 等所有 goroutine 完成后关闭 channel
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// 收集结果，去重入库
+	var allNew []storage.Item
+	sourceStats := make(map[string][2]int) // name → [total, new]
+
+	for r := range results {
+		if r.err != nil {
+			s.log.Warn("fetch failed", "source", r.name, "err", r.err)
+			continue
+		}
+
+		newItems := s.insertNew(ctx, r.items)
+		sourceStats[r.name] = [2]int{len(r.items), len(newItems)}
+		allNew = append(allNew, newItems...)
+	}
+
+	// 打印每个源的统计
+	for name, stats := range sourceStats {
+		s.log.Info("source fetched",
+			"source", name,
+			"total", stats[0],
+			"new", stats[1],
+		)
+	}
+
+	return allNew
+}
+
+// insertNew 对一批条目做去重检查，把新条目写入 DB 并返回。
+func (s *Scheduler) insertNew(ctx context.Context, items []storage.Item) []storage.Item {
 	var newItems []storage.Item
 	for _, item := range items {
 		exists, err := s.db.Exists(ctx, item.Link)
@@ -148,52 +209,22 @@ func (s *Scheduler) pollSource(ctx context.Context, ds config.DataSource) {
 		}
 		newItems = append(newItems, item)
 	}
-
-	s.log.Info("source polled",
-		"source", ds.Name,
-		"total", len(items),
-		"new", len(newItems),
-	)
-
-	if len(newItems) == 0 {
-		return
-	}
-
-	// AI analysis path.
-	if s.analyzer != nil && s.cfg.LLM.Enabled {
-		s.analyzeAndNotify(ctx, newItems)
-		return
-	}
-
-	// No AI — send normal notifications for every new item.
-	for _, item := range newItems {
-		s.notifier.Send(ctx, notify.Message{
-			Title:    item.SiteName + " 新增数据泄露",
-			Body:     item.Title,
-			Link:     item.Link,
-			SiteName: item.SiteName,
-			Kind:     notify.KindNormal,
-		})
-	}
+	return newItems
 }
 
 // ---------------------------------------------------------------------------
-// AI analysis → classify → urgent immediate push
+// Phase 2: 一次性批量 AI 分析
 // ---------------------------------------------------------------------------
 
-func (s *Scheduler) analyzeAndNotify(ctx context.Context, items []storage.Item) {
-	// Build batch inputs. Optionally skip already-analyzed items.
+func (s *Scheduler) batchAnalyzeAndNotify(ctx context.Context, items []storage.Item) {
+	// 过滤掉已分析过的条目
 	var batch []analyzer.BatchItem
 	itemByID := make(map[int64]storage.Item, len(items))
 
 	for _, it := range items {
 		if s.cfg.LLM.SkipAnalyzedItems {
-			existing, err := s.db.GetAnalysis(ctx, it.ID)
-			if err != nil {
-				s.log.Warn("get analysis check failed", "id", it.ID, "err", err)
-			}
-			if existing != nil {
-				continue // already analyzed
+			if existing, _ := s.db.GetAnalysis(ctx, it.ID); existing != nil {
+				continue
 			}
 		}
 		batch = append(batch, analyzer.BatchItem{
@@ -209,22 +240,26 @@ func (s *Scheduler) analyzeAndNotify(ctx context.Context, items []storage.Item) 
 		return
 	}
 
-	s.log.Info("starting AI analysis batch", "items", len(batch))
+	s.log.Info("AI batch analysis start", "items", len(batch))
+	start := time.Now()
 
+	// 全部送进 worker pool，并发分析（受 rate limiter 控制速率）
 	results := s.analyzer.AnalyzeBatch(ctx, batch, s.cfg.LLM.Workers)
 
 	var urgentIDs []int64
+	success, failed := 0, 0
 
 	for _, br := range results {
 		if br.Err != nil {
 			s.log.Warn("analysis failed", "id", br.ID, "err", br.Err)
+			failed++
 			continue
 		}
 
 		item := itemByID[br.ID]
 		res := br.Result
 
-		// Persist to DB.
+		// 持久化
 		row := storage.AnalysisRow{
 			ItemID:           br.ID,
 			Score:            res.Score,
@@ -243,21 +278,28 @@ func (s *Scheduler) analyzeAndNotify(ctx context.Context, items []storage.Item) 
 			continue
 		}
 
-		s.log.Info("item analyzed",
+		success++
+		s.log.Debug("analyzed",
 			"title", truncate(item.Title, 60),
 			"score", res.Score,
 			"category", res.Category,
 			"urgent", res.IsUrgent,
 		)
 
-		// Immediate push for urgent items.
+		// 紧急项收集，稍后统一推送
 		if res.IsUrgent {
-			s.sendUrgentAlert(ctx, item, res)
 			urgentIDs = append(urgentIDs, br.ID)
+			s.sendUrgentAlert(ctx, item, res)
 		}
 	}
 
-	// Mark urgent items as notified so they don't fire again.
+	s.log.Info("AI batch analysis done",
+		"success", success,
+		"failed", failed,
+		"urgent", len(urgentIDs),
+		"elapsed", time.Since(start).Round(time.Millisecond),
+	)
+
 	if len(urgentIDs) > 0 {
 		if err := s.db.MarkUrgentNotified(ctx, urgentIDs); err != nil {
 			s.log.Error("mark urgent notified failed", "err", err)
@@ -265,8 +307,10 @@ func (s *Scheduler) analyzeAndNotify(ctx context.Context, items []storage.Item) 
 	}
 }
 
-// pushPendingUrgent sends immediate alerts for any urgent items found in DB
-// that haven't been notified yet (e.g. items from a previous cycle or restart).
+// ---------------------------------------------------------------------------
+// 紧急告警
+// ---------------------------------------------------------------------------
+
 func (s *Scheduler) pushPendingUrgent(ctx context.Context) {
 	pending, err := s.db.UrgentUnnotified(ctx)
 	if err != nil {
@@ -276,7 +320,6 @@ func (s *Scheduler) pushPendingUrgent(ctx context.Context) {
 	if len(pending) == 0 {
 		return
 	}
-
 	s.log.Info("pushing pending urgent items", "count", len(pending))
 	var ids []int64
 	for _, iwa := range pending {
@@ -288,12 +331,9 @@ func (s *Scheduler) pushPendingUrgent(ctx context.Context) {
 	}
 }
 
-// sendUrgentAlert fires a KindUrgent notification to all channels.
 func (s *Scheduler) sendUrgentAlert(ctx context.Context, item storage.Item, res *analyzer.AnalysisResult) {
-	body := fmt.Sprintf(
-		"⚠️ 评分: %d/10 | 类别: %s | 置信度: %s\n\n%s",
-		res.Score, res.Category, res.ConfidenceLevel, res.Summary,
-	)
+	body := fmt.Sprintf("⚠️ 评分: %d/10 | 类别: %s | 置信度: %s\n\n%s",
+		res.Score, res.Category, res.ConfidenceLevel, res.Summary)
 	if len(res.AffectedTargets) > 0 {
 		body += "\n🎯 影响目标: " + strings.Join(res.AffectedTargets, ", ")
 	}
@@ -303,7 +343,6 @@ func (s *Scheduler) sendUrgentAlert(ctx context.Context, item storage.Item, res 
 	if res.EstimatedRecords > 0 {
 		body += fmt.Sprintf("\n📊 估计记录数: %d", res.EstimatedRecords)
 	}
-
 	s.notifier.Send(ctx, notify.Message{
 		Title:    fmt.Sprintf("🚨 紧急告警 [%s] %s", item.SiteName, item.Title),
 		Body:     body,
@@ -314,7 +353,7 @@ func (s *Scheduler) sendUrgentAlert(ctx context.Context, item storage.Item, res 
 }
 
 // ---------------------------------------------------------------------------
-// Report generation
+// 报告生成
 // ---------------------------------------------------------------------------
 
 func (s *Scheduler) generateDaily(ctx context.Context) {
@@ -329,12 +368,10 @@ func (s *Scheduler) generateDaily(ctx context.Context) {
 		s.log.Error("daily rss failed", "err", err)
 	}
 
-	// Build daily summary body with TOP-N AI analysis.
 	body := fmt.Sprintf("共收集到 %d 条数据泄露相关信息", result.TotalCount)
 	if s.analyzer != nil && s.cfg.LLM.Enabled {
 		body += s.buildTopNSummary(ctx)
 	}
-
 	s.notifier.Send(ctx, notify.Message{
 		Title: "数据泄露监控日报 " + result.Date,
 		Body:  body,
@@ -342,7 +379,6 @@ func (s *Scheduler) generateDaily(ctx context.Context) {
 	})
 }
 
-// buildTopNSummary appends the TOP-N high-value items to the daily report body.
 func (s *Scheduler) buildTopNSummary(ctx context.Context) string {
 	n := s.cfg.LLM.DailyTopN
 	if n <= 0 {
@@ -352,15 +388,12 @@ func (s *Scheduler) buildTopNSummary(ctx context.Context) string {
 	if err != nil || len(top) == 0 {
 		return ""
 	}
-
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("\n\n📊 今日 TOP %d 高价值情报：\n", len(top)))
 	for i, iwa := range top {
-		sb.WriteString(fmt.Sprintf(
-			"\n%d. [%d/10] %s\n   %s\n   %s",
+		sb.WriteString(fmt.Sprintf("\n%d. [%d/10] %s\n   %s\n   %s",
 			i+1, iwa.Analysis.Score, iwa.Item.Title,
-			iwa.Analysis.Summary, iwa.Item.Link,
-		))
+			iwa.Analysis.Summary, iwa.Item.Link))
 	}
 	return sb.String()
 }
@@ -372,11 +405,9 @@ func (s *Scheduler) generateWeekly(ctx context.Context) {
 		return
 	}
 	s.log.Info("weekly report generated", "file", result.MarkdownFile, "count", result.TotalCount)
-
 	if _, err := s.generator.GenerateRSS(ctx, "weekly"); err != nil {
 		s.log.Error("weekly rss failed", "err", err)
 	}
-
 	s.notifier.Send(ctx, notify.Message{
 		Title: fmt.Sprintf("数据泄露监控周报 %s – %s", result.StartDate, result.EndDate),
 		Body:  fmt.Sprintf("共收集到 %d 条数据泄露相关信息", result.TotalCount),
@@ -385,7 +416,7 @@ func (s *Scheduler) generateWeekly(ctx context.Context) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// 辅助函数
 // ---------------------------------------------------------------------------
 
 func (s *Scheduler) isSleepTime() bool {
@@ -407,19 +438,12 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// analysisRowToResult converts a storage.AnalysisRow back to analyzer.AnalysisResult
-// for use in notification formatting.
 func analysisRowToResult(row storage.AnalysisRow) *analyzer.AnalysisResult {
 	return &analyzer.AnalysisResult{
-		Score:            row.Score,
-		Category:         row.Category,
-		Tags:             row.Tags,
-		Summary:          row.Summary,
-		AffectedTargets:  row.AffectedTargets,
-		EstimatedRecords: row.EstimatedRecords,
-		DataTypes:        row.DataTypes,
-		IsUrgent:         row.IsUrgent,
-		ConfidenceLevel:  row.ConfidenceLevel,
-		Reasoning:        row.Reasoning,
+		Score: row.Score, Category: row.Category, Tags: row.Tags,
+		Summary: row.Summary, AffectedTargets: row.AffectedTargets,
+		EstimatedRecords: row.EstimatedRecords, DataTypes: row.DataTypes,
+		IsUrgent: row.IsUrgent, ConfidenceLevel: row.ConfidenceLevel,
+		Reasoning: row.Reasoning,
 	}
 }
