@@ -172,12 +172,49 @@ jobs:
             echo "⚠️ archive/ 为空，跳过 Pages 部署（首次运行正常）"
           fi
 
-      # ── 8. 打包 HTML 报告供 Pages 部署 ────────────────────────────────────
+      # ── 8. 准备部署目录（合并 index.html + archive/ + rss/）────────────────
+      - name: 准备 Pages 部署目录
+        if: steps.check_reports.outputs.has_reports == 'true'
+        run: |
+          mkdir -p _site
+          # 入口 index.html（根目录优先，不存在则生成跳转页）
+          if [ -f "index.html" ]; then
+            cp index.html _site/index.html
+          else
+            # 找最新日报作为跳转目标
+            LATEST=$(ls -1d archive/????-??-??/ 2>/dev/null | sort | tail -1)
+            LATEST_HTML=$(ls -1 ${LATEST}*.html 2>/dev/null | tail -1)
+            if [ -n "$LATEST_HTML" ]; then
+              TARGET="${LATEST_HTML#archive/}"
+              cat > _site/index.html << HTMLEOF
+          <!DOCTYPE html>
+          <html lang="zh-CN">
+          <head>
+            <meta charset="UTF-8">
+            <meta http-equiv="refresh" content="0; url=archive/${TARGET}">
+            <title>DarkWeb Forums Tracker</title>
+          </head>
+          <body>
+            <p>跳转中... <a href="archive/${TARGET}">点击此处</a></p>
+          </body>
+          </html>
+          HTMLEOF
+            else
+              echo "<html><body><p>首次运行后报告将显示在此处</p></body></html>" > _site/index.html
+            fi
+          fi
+          # 复制报告目录
+          [ -d archive ] && cp -r archive _site/archive
+          [ -d rss ]     && cp -r rss _site/rss
+          echo "📦 _site 目录内容："
+          ls _site/
+
+      # ── 9. 打包 HTML 报告供 Pages 部署 ────────────────────────────────────
       - name: Upload Pages artifact
         if: steps.check_reports.outputs.has_reports == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './archive'
+          path: './_site'
 
   # ── 部署 GitHub Pages ─────────────────────────────────────────────────────
   deploy-pages:

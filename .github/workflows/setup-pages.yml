@@ -24,12 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 上传 archive/ 目录（若为空则上传占位页）
+      # 上传 _site 目录（含占位页）
       - name: 创建占位页（首次部署）
         run: |
-          mkdir -p archive
-          if [ ! -f archive/index.html ]; then
-            cat > archive/index.html << 'EOF'
+          mkdir -p _site
+          cat > _site/index.html << 'EOF'
           <!DOCTYPE html>
           <html lang="zh-CN">
           <head><meta charset="UTF-8"><title>DarkWeb Forums Tracker</title>
@@ -43,12 +42,11 @@ jobs:
           <p style="color:#00e0ff">等待第一次扫描完成...</p>
           </div></body></html>
           EOF
-          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './archive'
+          path: './_site'
 
       - name: Deploy to GitHub Pages
         id: deploy
