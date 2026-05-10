@@ -23,41 +23,39 @@ sources:
   disable_builtin_seeds: false    # SOURCES_NO_SEEDS=true
 
 # ── AI 分析配置 ─────────────────────────────────────────────────────────────
-# 支持任何 OpenAI-wire 兼容 API：OpenAI / DeepSeek / Ollama / 自建网关
+# 使用 GitHub Models 内置 AI（无需付费，api_key 由 workflow 通过 LLM_API_KEY 注入）
+# 修改此处配置即可生效，workflow 不再覆盖这些值
 llm:
-  enabled: false              # LLM_ENABLED=true  — 总开关
+  enabled: true               # 开启 AI 分析（api_key 由 workflow 自动注入）
 
-  # 提供商标签（仅用于日志，不影响逻辑）
-  provider: "openai"          # LLM_PROVIDER: openai | deepseek | ollama | custom
+  provider: "github-models"   # 仅用于日志标识
 
-  # API 端点：留空 = 官方 OpenAI；填入自定义地址覆盖
-  base_url: ""                # LLM_BASE_URL
-  # 示例:
-  #   DeepSeek:  https://api.deepseek.com/v1
-  #   Ollama:    http://localhost:11434/v1
-  #   LiteLLM:   http://localhost:4000/v1
+  # GitHub Models 端点（固定值，不要修改）
+  base_url: "https://models.github.ai/inference"
 
-  api_key: ""                 # LLM_API_KEY  (必填，Ollama 填任意字符串)
+  api_key: ""                 # 由 workflow 通过 LLM_API_KEY=${{ secrets.GITHUB_TOKEN }} 注入
 
-  # 模型名称，与提供商匹配
-  model: "gpt-4o-mini"        # LLM_MODEL
-  # 示例: deepseek-chat | llama3.2 | gpt-4o | claude-3-haiku (via proxy)
+  # 模型选择：
+  #   meta/llama-3.3-70b-instruct  — 无 Azure 内容过滤（推荐用于暗网内容）
+  #   openai/gpt-4o-mini           — 更快但有内容过滤
+  #   openai/gpt-4o                — 最高精度，消耗配额多
+  model: "meta/llama-3.3-70b-instruct"
 
-  # 速率限制（每分钟请求数 + 突发量）
-  rpm: 60                     # LLM_RPM
-  rpm_burst: 5                # LLM_RPM_BURST
+  # GitHub Models 免费层：Llama 约 1 RPM，必须保守设置
+  rpm: 1
+  rpm_burst: 1
 
-  # 并发分析 goroutine 数量
-  workers: 3                  # LLM_WORKERS
+  # 串行分析（workers=1），避免并发触发 429
+  workers: 1
 
-  # 立即推送的评分阈值（score >= 此值 AND is_urgent=true 则立即推送）
-  urgent_score_threshold: 8   # LLM_URGENT_THRESHOLD
+  # score >= 此值 AND is_urgent=true 时立即推送告警
+  urgent_score_threshold: 8
 
-  # 每日报告仅展示 TOP N 高价值条目
-  daily_top_n: 20             # LLM_DAILY_TOP_N
+  # 日报只展示 TOP N 高价值条目
+  daily_top_n: 20
 
-  # 跳过已分析过的条目（重启后不重复计费）
-  skip_analyzed_items: true   # LLM_SKIP_ANALYZED
+  # 跳过已分析条目（重启后不重复消耗配额）
+  skip_analyzed_items: true
 
 push:
   dingtalk:

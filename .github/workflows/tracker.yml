@@ -94,49 +94,35 @@ jobs:
       - name: Run tracker
         id: run
         env:
-          # ── GitHub Models API（内置，无需额外付费）────────────────────────
-          # Llama 免费层限制约 1 RPM，串行调用避免 429
-          LLM_ENABLED:       ${{ inputs.skip_ai != true && 'true' || 'false' }}
-          LLM_BASE_URL:      "https://models.github.ai/inference"
-          LLM_API_KEY:       ${{ secrets.GITHUB_TOKEN }}
-          LLM_MODEL:         "meta/llama-3.3-70b-instruct"
-          LLM_RPM:           "1"     # 每分钟 1 次，严格遵守免费层限制
-          LLM_RPM_BURST:     "1"     # 不允许突发
-          LLM_WORKERS:       "1"     # 串行分析，避免并发 429
-          LLM_URGENT_THRESHOLD: "8"
-          LLM_DAILY_TOP_N:   "20"
-          LLM_SKIP_ANALYZED: "true"
+          # ══════════════════════════════════════════════════════════════════
+          # 设计原则：
+          #   workflow 只传 Secrets（无法写入 config.yaml 的敏感值）
+          #   所有业务配置（模型/速率/源/报告）统一在 config.yaml 管理
+          #   env 变量优先级 > config.yaml，所以这里只传必须的敏感项
+          # ══════════════════════════════════════════════════════════════════
 
-          # ── RSS 源管理 ───────────────────────────────────────────────────
-          # 使用仓库自身的 sources.yaml（相对路径即可）
-          # 若你 fork 后维护远程源，在此填写你的仓库地址
-          SOURCES_REMOTE_URL:    ""   # 留空 = 使用仓库内 sources.yaml + 内置 seeds
-          SOURCES_HEALTH_CHECK:  ${{ inputs.health_check != false && 'true' || 'false' }}
-          SOURCES_NO_SEEDS:      "false"
+          # ── 必须通过 env 传递的：Secrets（不能写进 yaml）────────────────
+          LLM_API_KEY:       ${{ secrets.GITHUB_TOKEN }}   # GitHub Models 内置鉴权
+          DISCORD_WEBHOOK:   ${{ secrets.DISCORD_WEBHOOK }}
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+          DINGTALK_WEBHOOK:  ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET:   ${{ secrets.DINGTALK_SECRET }}
+          FEISHU_WEBHOOK:    ${{ secrets.FEISHU_WEBHOOK }}
 
-          # ── 推送渠道（在仓库 Secrets 中配置）──────────────────────────────
-          DISCORD_WEBHOOK:       ${{ secrets.DISCORD_WEBHOOK }}
-          DISCORD_ENABLED:       ${{ secrets.DISCORD_WEBHOOK != '' && 'true' || 'false' }}
-          DISCORD_SEND_NORMAL:   "true"
-          DISCORD_SEND_DAILY:    "false"
-          DISCORD_SEND_WEEKLY:   "true"
+          # ── 渠道开关：根据 Secret 是否配置自动判断 ────────────────────
+          DISCORD_ENABLED:   ${{ secrets.DISCORD_WEBHOOK != '' && 'true' || 'false' }}
+          TELEGRAM_ENABLED:  ${{ secrets.TELEGRAM_TOKEN != '' && 'true' || 'false' }}
+          DINGTALK_ENABLED:  ${{ secrets.DINGTALK_WEBHOOK != '' && 'true' || 'false' }}
+          FEISHU_ENABLED:    ${{ secrets.FEISHU_WEBHOOK != '' && 'true' || 'false' }}
 
-          TELEGRAM_TOKEN:        ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID:      ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_ENABLED:      ${{ secrets.TELEGRAM_TOKEN != '' && 'true' || 'false' }}
+          # ── Actions 特有覆盖（与本地运行不同的行为）────────────────────
+          NIGHT_SLEEP_ENABLED: "false"   # Actions 已按时区调度，无需夜眠
 
-          DINGTALK_WEBHOOK:      ${{ secrets.DINGTALK_WEBHOOK }}
-          DINGTALK_SECRET:       ${{ secrets.DINGTALK_SECRET }}
-          DINGTALK_ENABLED:      ${{ secrets.DINGTALK_WEBHOOK != '' && 'true' || 'false' }}
-
-          FEISHU_WEBHOOK:        ${{ secrets.FEISHU_WEBHOOK }}
-          FEISHU_ENABLED:        ${{ secrets.FEISHU_WEBHOOK != '' && 'true' || 'false' }}
-
-          # ── 调度配置 ─────────────────────────────────────────────────────
-          NIGHT_SLEEP_ENABLED:   "false"  # Actions 已按时区调度，无需夜眠
-          DAILY_REPORT_ENABLED:  "true"
-          WEEKLY_REPORT_ENABLED: "true"
-          POLL_INTERVAL:         "2h"
+          # ── 手动触发时支持跳过 AI 分析 ──────────────────────────────────
+          LLM_ENABLED: ${{ inputs.skip_ai == true && 'false' || '' }}
+          # 注：LLM_ENABLED 留空时，以 config.yaml 中的 llm.enabled 为准
+          # 所有其他 LLM 参数（model/rpm/workers 等）从 config.yaml 读取
 
         run: |
           # 记录报告日期，供后续步骤引用
