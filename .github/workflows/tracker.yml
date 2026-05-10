@@ -1,0 +1,214 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DarkWeb Forums Tracker — 主工作流
+#
+# 触发：每天北京时间 10:00 自动运行 + 手动触发
+# 功能：
+#   1. 抓取所有 RSS 源（远程 sources.yaml 优先）
+#   2. AI 分析（使用 GitHub Models 内置 API，无需额外付费）
+#   3. 生成日报 / 周报 HTML
+#   4. 提交结果回 main 分支
+#   5. 部署 HTML 报告到 GitHub Pages
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: DarkWeb Forums Tracker
+
+on:
+  schedule:
+    # 北京时间每天 10:00（GitHub Actions 2026 支持 timezone 参数）
+    - cron: '0 10 * * *'
+      timezone: 'Asia/Shanghai'
+
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: '开启调试日志'
+        type: boolean
+        default: false
+      skip_ai:
+        description: '跳过 AI 分析（节省 API 配额）'
+        type: boolean
+        default: false
+      health_check:
+        description: '源健康检查'
+        type: boolean
+        default: true
+
+# 同一时间只允许一个实例运行，避免数据库冲突
+concurrency:
+  group: darkweb-tracker
+  cancel-in-progress: false   # 不取消正在运行的，等待完成
+
+permissions:
+  contents: write   # 提交结果回仓库
+  models: read      # 调用 GitHub Models AI API
+  pages: write      # 部署到 GitHub Pages
+  id-token: write   # GitHub Pages OIDC 部署必需
+
+jobs:
+  # ── 核心任务：抓取 + 分析 + 报告 ─────────────────────────────────────────
+  track:
+    name: 抓取 & 分析
+    runs-on: ubuntu-latest
+    timeout-minutes: 55   # 留 5 分钟给后续 Pages 部署
+
+    outputs:
+      has_changes: ${{ steps.commit.outputs.changes_detected }}
+      report_date: ${{ steps.run.outputs.report_date }}
+
+    steps:
+      # ── 1. 检出代码 ────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 必须 fetch 完整历史，否则 git push 可能冲突
+          fetch-depth: 0
+          # 使用 PAT 时设置 token（默认 GITHUB_TOKEN 也可提交）
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 2. 从缓存恢复 SQLite 数据库（跨 workflow 持久化）──────────────────
+      # 注意：GitHub Cache 不适合大文件，推荐把 db 提交到仓库
+      # 这里只是示范如何处理上次运行的残留数据
+      - name: 拉取最新数据（含上次运行的 db）
+        run: |
+          git pull --rebase origin main || echo "::warning::拉取失败，继续使用本地版本"
+
+      # ── 3. 配置 Go 环境 ────────────────────────────────────────────────────
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true   # 自动缓存 go mod 依赖
+
+      # ── 4. 编译（带版本号） ─────────────────────────────────────────────────
+      - name: Build
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          go build \
+            -ldflags="-s -w -X main.Version=${VERSION}" \
+            -o tracker \
+            ./cmd/tracker
+          echo "Binary: $(./tracker --version)"
+
+      # ── 5. 运行主程序 ──────────────────────────────────────────────────────
+      - name: Run tracker
+        id: run
+        env:
+          # ── GitHub Models API（内置，无需额外付费）────────────────────────
+          # 端点固定，模型名须带 "openai/" 或 "meta/" 前缀
+          LLM_ENABLED:       ${{ inputs.skip_ai != true && 'true' || 'false' }}
+          LLM_BASE_URL:      "https://models.github.ai/inference"
+          LLM_API_KEY:       ${{ secrets.GITHUB_TOKEN }}   # 直接使用内置 token
+          LLM_MODEL:         "openai/gpt-4o-mini"          # 免费高效
+          LLM_RPM:           "10"    # GitHub Models 免费层限速较低，保守设置
+          LLM_RPM_BURST:     "3"
+          LLM_WORKERS:       "2"     # 并发适中，避免触发限速
+          LLM_URGENT_THRESHOLD: "8"
+          LLM_DAILY_TOP_N:   "20"
+          LLM_SKIP_ANALYZED: "true"  # 重要：已分析过的跳过，节省配额
+
+          # ── RSS 源管理 ───────────────────────────────────────────────────
+          # 使用仓库自身的 sources.yaml（相对路径即可）
+          # 若你 fork 后维护远程源，在此填写你的仓库地址
+          SOURCES_REMOTE_URL:    ""   # 留空 = 使用仓库内 sources.yaml + 内置 seeds
+          SOURCES_HEALTH_CHECK:  ${{ inputs.health_check != false && 'true' || 'false' }}
+          SOURCES_NO_SEEDS:      "false"
+
+          # ── 推送渠道（在仓库 Secrets 中配置）──────────────────────────────
+          DISCORD_WEBHOOK:       ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_ENABLED:       ${{ secrets.DISCORD_WEBHOOK != '' && 'true' || 'false' }}
+          DISCORD_SEND_NORMAL:   "true"
+          DISCORD_SEND_DAILY:    "false"
+          DISCORD_SEND_WEEKLY:   "true"
+
+          TELEGRAM_TOKEN:        ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:      ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ENABLED:      ${{ secrets.TELEGRAM_TOKEN != '' && 'true' || 'false' }}
+
+          DINGTALK_WEBHOOK:      ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET:       ${{ secrets.DINGTALK_SECRET }}
+          DINGTALK_ENABLED:      ${{ secrets.DINGTALK_WEBHOOK != '' && 'true' || 'false' }}
+
+          FEISHU_WEBHOOK:        ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_ENABLED:        ${{ secrets.FEISHU_WEBHOOK != '' && 'true' || 'false' }}
+
+          # ── 调度配置 ─────────────────────────────────────────────────────
+          NIGHT_SLEEP_ENABLED:   "false"  # Actions 已按时区调度，无需夜眠
+          DAILY_REPORT_ENABLED:  "true"
+          WEEKLY_REPORT_ENABLED: "true"
+          POLL_INTERVAL:         "2h"
+
+        run: |
+          # 记录报告日期，供后续步骤引用
+          echo "report_date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+          # 构建运行参数
+          ARGS="--once --config config.yaml --db data_leaks.db"
+          if [ "${{ inputs.debug }}" = "true" ]; then
+            ARGS="$ARGS --debug"
+          fi
+
+          echo "::group::Tracker 运行日志"
+          ./tracker $ARGS
+          echo "::endgroup::"
+
+      # ── 6. 提交结果回仓库 ──────────────────────────────────────────────────
+      - name: Commit 结果
+        id: commit
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: |
+            auto: 每日扫描更新 ${{ steps.run.outputs.report_date }} [skip ci]
+
+            - 抓取 DarkWeb 论坛 RSS
+            - AI 分析评分（GitHub Models / gpt-4o-mini）
+            - 生成日报 HTML
+          file_pattern: |
+            data_leaks.db
+            archive/**
+            rss/**
+            index.html
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          # 无变化时静默，不报错
+          skip_dirty_check: false
+
+      # ── 7. 打包 HTML 报告供 Pages 部署 ────────────────────────────────────
+      - name: Upload Pages artifact
+        # 即使没有新数据也上传（保持 Pages 内容最新）
+        if: always()
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './archive'   # 上传 archive/ 目录到 Pages
+
+  # ── 部署 GitHub Pages ─────────────────────────────────────────────────────
+  deploy-pages:
+    name: 部署报告到 GitHub Pages
+    needs: track
+    if: always()   # track 失败时也尝试部署（避免 Pages 内容丢失）
+
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+  # ── 清理旧 workflow 运行记录 ──────────────────────────────────────────────
+  cleanup:
+    name: 清理旧运行记录
+    needs: track
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 14
+          keep_minimum_runs: 10

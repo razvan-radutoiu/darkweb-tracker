@@ -1,0 +1,113 @@
+# DarkWeb Forums Tracker — Community RSS Sources
+# ─────────────────────────────────────────────
+# 这是社区维护的 RSS 源列表。Fork 本项目后在此文件更新论坛地址，
+# 其他用户只需设置 SOURCES_REMOTE_URL 指向你的 raw GitHub URL 即可自动同步。
+#
+# 格式说明：
+#   name    : 展示名称（唯一标识，修改会视为新源）
+#   rss_url : RSS/Atom feed 直链
+#   enabled : true=启用 / false=暂时禁用（已迁移/暂时宕机时设 false）
+#   tags    : 可选标签，用于将来的过滤功能
+#   note    : 变更备注，记录迁移历史
+
+version: "1"
+updated: "2026-05-11"
+
+sources:
+
+  # ── 综合黑客/数据泄露论坛 ─────────────────────────────────────────────────
+
+  - name: "gerki"
+    rss_url: "https://forum.gerki.ws/forums/-/index.rss"
+    enabled: true
+    tags: ["credentials", "database"]
+    note: ""
+
+  - name: "blackbones"
+    rss_url: "https://blackbones.net/forums/-/index.rss"
+    enabled: true
+    tags: ["credentials", "carding"]
+    note: ""
+
+  - name: "hard-tm"
+    rss_url: "https://hard-tm.su/forums/-/index.rss"
+    enabled: true
+    tags: ["database", "combo"]
+    note: ""
+
+  - name: "ascarding"
+    rss_url: "https://ascarding.net/forums/-/index.rss"
+    enabled: true
+    tags: ["carding", "financial"]
+    note: ""
+
+  - name: "mipped"
+    rss_url: "https://mipped.com/f/forums/-/index.rss"
+    enabled: true
+    tags: ["database", "credentials"]
+    note: ""
+
+  - name: "leakbase"
+    rss_url: "https://leakbase.la/forums/-/index.rss"
+    enabled: true
+    tags: ["database", "credentials", "pii"]
+    note: ""
+
+  - name: "dublikat"
+    rss_url: "https://at.dublikat.club/forums/-/index.rss"
+    enabled: true
+    tags: ["credentials"]
+    note: ""
+
+  - name: "cardforum"
+    rss_url: "https://cardforum.cc/syndication.php?limit=50"
+    enabled: true
+    tags: ["carding", "financial"]
+    note: ""
+
+  - name: "ipbmafia"
+    rss_url: "https://ipbmafia.ru/rss/1-temy.xml/"
+    enabled: true
+    tags: ["russian", "credentials", "malware"]
+    note: ""
+
+  # ── 暂时不可用（403 / 超时）— 保留等待恢复 ──────────────────────────────
+
+  - name: "xforums.st"
+    rss_url: "https://xforums.st/forums/-/index.rss"
+    enabled: false
+    tags: ["credentials", "database"]
+    note: "2026-05 超时，可能已迁移，待确认新地址"
+
+  - name: "htdark"
+    rss_url: "https://htdark.com/forums/-/index.rss"
+    enabled: false
+    tags: ["hacking", "credentials"]
+    note: "2026-05 返回 403，可能需要登录或已屏蔽爬虫"
+
+  - name: "niflheim"
+    rss_url: "https://niflheim.world/forums/-/index.rss"
+    enabled: false
+    tags: ["credentials"]
+    note: "2026-05 返回 403"
+
+  - name: "sinister"
+    rss_url: "https://sinister.ly/syndication.php?fid=9&limit=50"
+    enabled: false
+    tags: ["hacking", "malware"]
+    note: "2026-05 DNS 解析失败，域名可能已迁移"
+
+  # ── 待确认 / 新增候选 ────────────────────────────────────────────────────
+  # 从 fastfire/deepdarkCTI 发现的新源，验证后移到上方
+
+  - name: "darkforums"
+    rss_url: "https://darkforums.st/forums/-/index.rss"
+    enabled: false
+    tags: ["database", "credentials"]
+    note: "从 deepdarkCTI 发现，待验证；原 darkforums.io 已迁移至 .st"
+
+  - name: "leakzone"
+    rss_url: "https://leakzone.net/syndication.php?limit=50"
+    enabled: false
+    tags: ["database"]
+    note: "候选，待验证可用性"

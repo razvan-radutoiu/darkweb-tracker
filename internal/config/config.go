@@ -1,0 +1,417 @@
+// Package config handles loading and merging configuration from YAML files
+// and environment variables. Environment variables always take precedence.
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// ---------------------------------------------------------------------------
+// Top-level config structure
+// ---------------------------------------------------------------------------
+
+type Config struct {
+	Push         PushConfig            `yaml:"push"`
+	Proxy        ProxyConfig           `yaml:"proxy"`
+	NightSleep   NightSleepConfig      `yaml:"night_sleep"`
+	DailyReport  ReportConfig          `yaml:"daily_report"`
+	WeeklyReport WeeklyReportConfig    `yaml:"weekly_report"`
+	DataSources  map[string]DataSource `yaml:"data_sources"`
+	Interval     time.Duration         `yaml:"interval"`
+	LLM          LLMConfig             `yaml:"llm"`
+	Sources      SourcesConfig         `yaml:"sources"`
+}
+
+// SourcesConfig controls how RSS feed source lists are loaded.
+type SourcesConfig struct {
+	// RemoteURL is a URL (or GitHub shorthand "owner/repo/file.yaml") pointing
+	// to a remotely-hosted sources YAML. Fetched on every startup.
+	// Leave empty to use only local config + built-in seeds.
+	RemoteURL string `yaml:"remote_url"` // SOURCES_REMOTE_URL
+
+	// LocalOverridesRemote: when true, local data_sources entries win over
+	// the remote file for the same source name. Default false (remote wins).
+	LocalOverridesRemote bool `yaml:"local_overrides_remote"` // SOURCES_LOCAL_OVERRIDES
+
+	// HealthCheck probes every enabled source with a HEAD request before
+	// starting the poll cycle, automatically skipping unreachable feeds.
+	HealthCheck bool `yaml:"health_check"` // SOURCES_HEALTH_CHECK
+
+	// DisableBuiltinSeeds prevents the hardcoded fallback seed list from being
+	// used when no other source provides a given feed. Default false.
+	DisableBuiltinSeeds bool `yaml:"disable_builtin_seeds"` // SOURCES_NO_SEEDS
+}
+
+// LLMConfig holds all settings for the AI analysis layer.
+// Supports any OpenAI-wire-compatible provider: OpenAI, DeepSeek, Ollama, etc.
+type LLMConfig struct {
+	// Enabled controls whether AI analysis runs at all.
+	Enabled bool `yaml:"enabled"` // LLM_ENABLED
+
+	// Provider is a label for logging: "openai", "deepseek", "ollama", "custom".
+	Provider string `yaml:"provider"` // LLM_PROVIDER
+
+	// BaseURL overrides the API endpoint. Leave empty for official OpenAI.
+	// DeepSeek: https://api.deepseek.com/v1
+	// Ollama:   http://localhost:11434/v1
+	BaseURL string `yaml:"base_url"` // LLM_BASE_URL
+
+	// APIKey is the authentication token.
+	APIKey string `yaml:"api_key"` // LLM_API_KEY
+
+	// Model is the model identifier, e.g. "gpt-4o-mini", "deepseek-chat", "llama3".
+	Model string `yaml:"model"` // LLM_MODEL
+
+	// RPM is the requests-per-minute rate limit. Default 60.
+	RPM int `yaml:"rpm"` // LLM_RPM
+
+	// RPMBurst is the burst size for the rate limiter. Default 5.
+	RPMBurst int `yaml:"rpm_burst"` // LLM_RPM_BURST
+
+	// Workers is the number of concurrent analysis goroutines. Default 3.
+	Workers int `yaml:"workers"` // LLM_WORKERS
+
+	// UrgentScoreThreshold is the minimum score to trigger an immediate push. Default 8.
+	UrgentScoreThreshold int `yaml:"urgent_score_threshold"` // LLM_URGENT_THRESHOLD
+
+	// DailyTopN is how many top-scored items to include in daily reports. Default 20.
+	DailyTopN int `yaml:"daily_top_n"` // LLM_DAILY_TOP_N
+
+	// SkipAnalyzedItems skips re-analysis of items that already have a result in DB.
+	SkipAnalyzedItems bool `yaml:"skip_analyzed_items"` // LLM_SKIP_ANALYZED
+}
+
+type PushConfig struct {
+	DingTalk PushChannel    `yaml:"dingtalk"`
+	Feishu   PushChannel    `yaml:"feishu"`
+	Telegram TelegramConfig `yaml:"telegram"`
+	Discord  DiscordConfig  `yaml:"discord"`
+}
+
+type PushChannel struct {
+	Webhook string `yaml:"webhook"`
+	Enabled bool   `yaml:"enabled"`
+}
+
+type TelegramConfig struct {
+	Token   string `yaml:"token"`
+	ChatID  string `yaml:"chat_id"`
+	Enabled bool   `yaml:"enabled"`
+}
+
+// DingTalk requires HMAC-SHA256 signing.
+type DingTalkConfig struct {
+	Webhook   string `yaml:"webhook"`
+	SecretKey string `yaml:"secret_key"`
+	Enabled   bool   `yaml:"enabled"`
+}
+
+type DiscordConfig struct {
+	Webhook           string `yaml:"webhook"`
+	Enabled           bool   `yaml:"enabled"`
+	SendDailyReport   bool   `yaml:"send_daily_report"`
+	SendNormalMsg     bool   `yaml:"send_normal_msg"`
+	SendWeeklyReport  bool   `yaml:"send_weekly_report"`
+}
+
+type ProxyConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	HTTP     string `yaml:"http"`
+	HTTPS    string `yaml:"https"`
+	NoProxy  string `yaml:"no_proxy"`
+}
+
+type NightSleepConfig struct {
+	Enabled   bool `yaml:"enabled"`
+	StartHour int  `yaml:"start_hour"` // default 0
+	EndHour   int  `yaml:"end_hour"`   // default 7
+}
+
+type ReportConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+type WeeklyReportConfig struct {
+	Enabled   bool      `yaml:"enabled"`
+	PushEnabled bool    `yaml:"push_enabled"`
+	PushTime  string    `yaml:"push_time"`  // "15:00"
+	PushDay   time.Weekday `yaml:"push_day"` // 5 = Friday
+}
+
+type DataSource struct {
+	Name    string `yaml:"name"`
+	RSSURL  string `yaml:"rss_url"`
+	Enabled bool   `yaml:"enabled"`
+}
+
+// ---------------------------------------------------------------------------
+// DingTalk lives separately (has secret_key field)
+// ---------------------------------------------------------------------------
+
+// dingtalkYAML is used only during YAML unmarshalling.
+type dingtalkYAML struct {
+	Webhook   string `yaml:"webhook"`
+	SecretKey string `yaml:"secret_key"`
+	Enabled   bool   `yaml:"enabled"`
+}
+
+// rawPushConfig mirrors PushConfig for YAML loading (DingTalk needs special type).
+type rawPushConfig struct {
+	DingTalk dingtalkYAML   `yaml:"dingtalk"`
+	Feishu   PushChannel    `yaml:"feishu"`
+	Telegram TelegramConfig `yaml:"telegram"`
+	Discord  DiscordConfig  `yaml:"discord"`
+}
+
+type rawConfig struct {
+	Push         rawPushConfig         `yaml:"push"`
+	Proxy        ProxyConfig           `yaml:"proxy"`
+	NightSleep   NightSleepConfig      `yaml:"night_sleep"`
+	DailyReport  ReportConfig          `yaml:"daily_report"`
+	WeeklyReport WeeklyReportConfig    `yaml:"weekly_report"`
+	DataSources  map[string]DataSource `yaml:"data_sources"`
+	Interval     string                `yaml:"interval"`
+	LLM          LLMConfig             `yaml:"llm"`
+	Sources      SourcesConfig         `yaml:"sources"`
+}
+
+// DingTalk returns the DingTalk config (stored separately from PushConfig).
+var globalDingTalk DingTalkConfig
+
+func DingTalk() DingTalkConfig { return globalDingTalk }
+
+// ---------------------------------------------------------------------------
+// Load loads config.yaml then overlays environment variables.
+// ---------------------------------------------------------------------------
+
+func Load(path string) (*Config, error) {
+	raw := defaultRawConfig()
+
+	if data, err := os.ReadFile(path); err == nil {
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	// Overlay environment variables.
+	applyEnv(&raw)
+
+	cfg := &Config{
+		Push: PushConfig{
+			Feishu:   raw.Push.Feishu,
+			Telegram: raw.Push.Telegram,
+			Discord:  raw.Push.Discord,
+		},
+		Proxy:        raw.Proxy,
+		NightSleep:   raw.NightSleep,
+		DailyReport:  raw.DailyReport,
+		WeeklyReport: raw.WeeklyReport,
+		DataSources:  raw.DataSources,
+		LLM:          raw.LLM,
+		Sources:      raw.Sources,
+	}
+
+	// Apply LLM defaults.
+	if cfg.LLM.Model == "" {
+		cfg.LLM.Model = "gpt-4o-mini"
+	}
+	if cfg.LLM.RPM == 0 {
+		cfg.LLM.RPM = 60
+	}
+	if cfg.LLM.RPMBurst == 0 {
+		cfg.LLM.RPMBurst = 5
+	}
+	if cfg.LLM.Workers == 0 {
+		cfg.LLM.Workers = 3
+	}
+	if cfg.LLM.UrgentScoreThreshold == 0 {
+		cfg.LLM.UrgentScoreThreshold = 8
+	}
+	if cfg.LLM.DailyTopN == 0 {
+		cfg.LLM.DailyTopN = 20
+	}
+
+	// Store DingTalk globally (it has extra field).
+	globalDingTalk = DingTalkConfig{
+		Webhook:   raw.Push.DingTalk.Webhook,
+		SecretKey: raw.Push.DingTalk.SecretKey,
+		Enabled:   raw.Push.DingTalk.Enabled,
+	}
+
+	// Parse interval.
+	if raw.Interval != "" {
+		d, err := time.ParseDuration(raw.Interval)
+		if err != nil {
+			return nil, fmt.Errorf("invalid interval %q: %w", raw.Interval, err)
+		}
+		cfg.Interval = d
+	}
+	if cfg.Interval == 0 {
+		cfg.Interval = 2 * time.Hour
+	}
+
+	// Validate data sources have required fields.
+	for k, ds := range cfg.DataSources {
+		if ds.RSSURL == "" {
+			return nil, fmt.Errorf("data_source %q missing rss_url", k)
+		}
+		if ds.Name == "" {
+			ds.Name = k
+			cfg.DataSources[k] = ds
+		}
+	}
+
+	return cfg, nil
+}
+
+func defaultRawConfig() rawConfig {
+	return rawConfig{
+		NightSleep: NightSleepConfig{
+			Enabled:   true,
+			StartHour: 0,
+			EndHour:   7,
+		},
+		DailyReport:  ReportConfig{Enabled: true},
+		WeeklyReport: WeeklyReportConfig{
+			Enabled:     true,
+			PushEnabled: true,
+			PushTime:    "15:00",
+			PushDay:     time.Friday,
+		},
+		Push: rawPushConfig{
+			Discord: DiscordConfig{
+				SendNormalMsg: true,
+			},
+		},
+		Interval: "2h",
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Environment variable overlay
+// ---------------------------------------------------------------------------
+
+func applyEnv(r *rawConfig) {
+	// DingTalk
+	envStr("DINGTALK_WEBHOOK", &r.Push.DingTalk.Webhook)
+	envStr("DINGTALK_SECRET", &r.Push.DingTalk.SecretKey)
+	envBool("DINGTALK_ENABLED", &r.Push.DingTalk.Enabled)
+
+	// Feishu
+	envStr("FEISHU_WEBHOOK", &r.Push.Feishu.Webhook)
+	envBool("FEISHU_ENABLED", &r.Push.Feishu.Enabled)
+
+	// Telegram
+	envStr("TELEGRAM_TOKEN", &r.Push.Telegram.Token)
+	envStr("TELEGRAM_CHAT_ID", &r.Push.Telegram.ChatID)
+	envBool("TELEGRAM_ENABLED", &r.Push.Telegram.Enabled)
+
+	// Discord
+	envStr("DISCORD_WEBHOOK", &r.Push.Discord.Webhook)
+	envBool("DISCORD_ENABLED", &r.Push.Discord.Enabled)
+	envBool("DISCORD_SEND_DAILY", &r.Push.Discord.SendDailyReport)
+	envBool("DISCORD_SEND_NORMAL", &r.Push.Discord.SendNormalMsg)
+	envBool("DISCORD_SEND_WEEKLY", &r.Push.Discord.SendWeeklyReport)
+
+	// Proxy
+	envBool("PROXY_ENABLED", &r.Proxy.Enabled)
+	envStr("HTTP_PROXY", &r.Proxy.HTTP)
+	envStr("HTTPS_PROXY", &r.Proxy.HTTPS)
+	envStr("NO_PROXY", &r.Proxy.NoProxy)
+
+	// Night sleep
+	envBool("NIGHT_SLEEP_ENABLED", &r.NightSleep.Enabled)
+
+	// Reports
+	envBool("DAILY_REPORT_ENABLED", &r.DailyReport.Enabled)
+	envBool("WEEKLY_REPORT_ENABLED", &r.WeeklyReport.Enabled)
+	envBool("WEEKLY_REPORT_PUSH_ENABLED", &r.WeeklyReport.PushEnabled)
+
+	// Per data-source toggles: DATASOURCE_<NAME>=true|false
+	for key := range r.DataSources {
+		envKey := "DATASOURCE_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
+		if v := os.Getenv(envKey); v != "" {
+			ds := r.DataSources[key]
+			ds.Enabled, _ = strconv.ParseBool(v)
+			r.DataSources[key] = ds
+		}
+	}
+
+	// Interval
+	if v := os.Getenv("POLL_INTERVAL"); v != "" {
+		r.Interval = v
+	}
+
+	// LLM
+	envBool("LLM_ENABLED", &r.LLM.Enabled)
+	envStr("LLM_PROVIDER", &r.LLM.Provider)
+	envStr("LLM_BASE_URL", &r.LLM.BaseURL)
+	envStr("LLM_API_KEY", &r.LLM.APIKey)
+	envStr("LLM_MODEL", &r.LLM.Model)
+	envInt("LLM_RPM", &r.LLM.RPM)
+	envInt("LLM_RPM_BURST", &r.LLM.RPMBurst)
+	envInt("LLM_WORKERS", &r.LLM.Workers)
+	envInt("LLM_URGENT_THRESHOLD", &r.LLM.UrgentScoreThreshold)
+	envInt("LLM_DAILY_TOP_N", &r.LLM.DailyTopN)
+	envBool("LLM_SKIP_ANALYZED", &r.LLM.SkipAnalyzedItems)
+
+	// Sources
+	envStr("SOURCES_REMOTE_URL", &r.Sources.RemoteURL)
+	envBool("SOURCES_LOCAL_OVERRIDES", &r.Sources.LocalOverridesRemote)
+	envBool("SOURCES_HEALTH_CHECK", &r.Sources.HealthCheck)
+	envBool("SOURCES_NO_SEEDS", &r.Sources.DisableBuiltinSeeds)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+func envStr(key string, dst *string) {
+	if v := os.Getenv(key); v != "" {
+		*dst = v
+	}
+}
+
+func envBool(key string, dst *bool) {
+	if v := os.Getenv(key); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err == nil {
+			*dst = b
+		}
+	}
+}
+
+func envInt(key string, dst *int) {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			*dst = n
+		}
+	}
+}
+
+// EnabledSources returns only the data sources that are enabled.
+func (c *Config) EnabledSources() []DataSource {
+	out := make([]DataSource, 0, len(c.DataSources))
+	for _, ds := range c.DataSources {
+		if ds.Enabled {
+			out = append(out, ds)
+		}
+	}
+	return out
+}
+
+// AnyPushEnabled returns true if at least one notification channel is active.
+func (c *Config) AnyPushEnabled() bool {
+	return globalDingTalk.Enabled ||
+		c.Push.Feishu.Enabled ||
+		c.Push.Telegram.Enabled ||
+		c.Push.Discord.Enabled
+}

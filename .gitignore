@@ -1,0 +1,31 @@
+# SQLite 数据库（本地运行产生）
+data_leaks.db
+
+# 编译产物
+tracker
+tracker.exe
+
+# 运行时生成的报告和 RSS（不提交，由 Actions 生成并提交）
+# 如果你想把日报也纳入版本管理，注释掉下面两行
+archive/
+rss/
+
+# 训练数据导出文件
+training_data.jsonl
+*.jsonl
+
+# Go 工具链
+vendor/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 本地覆盖配置（包含真实密钥时不提交）
+config.local.yaml

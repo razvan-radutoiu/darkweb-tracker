@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 训练数据导出工作流 — 手动触发，导出 JSONL 并上传为 Artifact
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Export Training Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: '开始日期 (YYYY-MM-DD)，留空 = 最近 30 天'
+        type: string
+        default: ''
+      until:
+        description: '结束日期 (YYYY-MM-DD)，留空 = 今天'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: 导出训练数据集
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 拉取最新数据
+        run: git pull --rebase origin main || true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Build
+        run: go build -o tracker ./cmd/tracker
+
+      - name: 导出 JSONL
+        run: |
+          ARGS="--export-training --out training_data.jsonl"
+          if [ -n "${{ inputs.since }}" ]; then
+            ARGS="$ARGS --since ${{ inputs.since }}"
+          fi
+          if [ -n "${{ inputs.until }}" ]; then
+            ARGS="$ARGS --until ${{ inputs.until }}"
+          fi
+          ./tracker $ARGS --db data_leaks.db
+          echo "导出完成，记录数：$(wc -l < training_data.jsonl)"
+
+      - name: Upload JSONL Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-data-${{ github.run_number }}
+          path: training_data.jsonl
+          retention-days: 30

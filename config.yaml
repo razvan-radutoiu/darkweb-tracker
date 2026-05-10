@@ -1,0 +1,181 @@
+# DarkWeb Forums Tracker — 配置文件
+# 环境变量优先级高于此文件中的所有配置项
+
+# ── RSS 源加载策略 ────────────────────────────────────────────────────────────
+# 加载优先级: 远程 URL > 本地 data_sources > 内置 seed 列表
+sources:
+  # 远程源文件 URL（推荐：填写你自己 fork 后维护的地址）
+  # 支持完整 HTTPS URL 或 GitHub 简写 "owner/repo/branch/path"
+  remote_url: ""              # SOURCES_REMOTE_URL
+  #
+  # 推荐远程源（任选其一，或 fork 后自行维护）：
+  #
+  # 【选项 A】使用本项目维护的社区源列表（随时更新）：
+  #   remote_url: "your-username/darkweb-tracker/main/sources.yaml"
+  #
+  # 【选项 B】直接用 raw GitHub URL：
+  #   remote_url: "https://raw.githubusercontent.com/your-username/darkweb-tracker/main/sources.yaml"
+  #
+  # 【选项 C】完全离线，只用下方 data_sources + 内置 seeds：
+  #   remote_url: ""
+
+  # 当远程和本地都有同名源时，是否让本地配置优先（默认远程优先）
+  local_overrides_remote: false   # SOURCES_LOCAL_OVERRIDES=true
+
+  # 启动时对所有源做 HEAD 健康检查，自动跳过无法访问的 URL
+  # 推荐开启，可避免在死链上浪费时间（增加约 5-10 秒启动时间）
+  health_check: true              # SOURCES_HEALTH_CHECK=false
+
+  # 禁用内置 seed 列表（若你完全自己管理源列表）
+  disable_builtin_seeds: false    # SOURCES_NO_SEEDS=true
+
+# ── AI 分析配置 ─────────────────────────────────────────────────────────────
+# 支持任何 OpenAI-wire 兼容 API：OpenAI / DeepSeek / Ollama / 自建网关
+llm:
+  enabled: false              # LLM_ENABLED=true  — 总开关
+
+  # 提供商标签（仅用于日志，不影响逻辑）
+  provider: "openai"          # LLM_PROVIDER: openai | deepseek | ollama | custom
+
+  # API 端点：留空 = 官方 OpenAI；填入自定义地址覆盖
+  base_url: ""                # LLM_BASE_URL
+  # 示例:
+  #   DeepSeek:  https://api.deepseek.com/v1
+  #   Ollama:    http://localhost:11434/v1
+  #   LiteLLM:   http://localhost:4000/v1
+
+  api_key: ""                 # LLM_API_KEY  (必填，Ollama 填任意字符串)
+
+  # 模型名称，与提供商匹配
+  model: "gpt-4o-mini"        # LLM_MODEL
+  # 示例: deepseek-chat | llama3.2 | gpt-4o | claude-3-haiku (via proxy)
+
+  # 速率限制（每分钟请求数 + 突发量）
+  rpm: 60                     # LLM_RPM
+  rpm_burst: 5                # LLM_RPM_BURST
+
+  # 并发分析 goroutine 数量
+  workers: 3                  # LLM_WORKERS
+
+  # 立即推送的评分阈值（score >= 此值 AND is_urgent=true 则立即推送）
+  urgent_score_threshold: 8   # LLM_URGENT_THRESHOLD
+
+  # 每日报告仅展示 TOP N 高价值条目
+  daily_top_n: 20             # LLM_DAILY_TOP_N
+
+  # 跳过已分析过的条目（重启后不重复计费）
+  skip_analyzed_items: true   # LLM_SKIP_ANALYZED
+
+push:
+  dingtalk:
+    webhook: ""          # DINGTALK_WEBHOOK
+    secret_key: ""       # DINGTALK_SECRET
+    enabled: false       # DINGTALK_ENABLED=true
+
+  feishu:
+    webhook: ""          # FEISHU_WEBHOOK
+    enabled: false       # FEISHU_ENABLED=true
+
+  telegram:
+    token: ""            # TELEGRAM_TOKEN
+    chat_id: ""          # TELEGRAM_CHAT_ID
+    enabled: false       # TELEGRAM_ENABLED=true
+
+  discord:
+    webhook: ""          # DISCORD_WEBHOOK
+    enabled: true        # DISCORD_ENABLED=true
+    send_daily_report: false   # DISCORD_SEND_DAILY=true
+    send_normal_msg: true      # DISCORD_SEND_NORMAL=true
+    send_weekly_report: true   # DISCORD_SEND_WEEKLY=true
+
+proxy:
+  enabled: false         # PROXY_ENABLED=true
+  http: ""               # HTTP_PROXY
+  https: ""              # HTTPS_PROXY
+  no_proxy: "localhost,127.0.0.1"
+
+night_sleep:
+  enabled: true          # NIGHT_SLEEP_ENABLED=false
+  start_hour: 0          # Beijing time 00:00
+  end_hour: 7            # Beijing time 07:00
+
+daily_report:
+  enabled: true          # DAILY_REPORT_ENABLED=false
+
+weekly_report:
+  enabled: true          # WEEKLY_REPORT_ENABLED=false
+  push_enabled: true     # WEEKLY_REPORT_PUSH_ENABLED=false
+  push_time: "15:00"
+  push_day: 5            # 1=Mon … 7=Sun (5=Fri)
+
+# 轮询间隔，支持 Go duration 格式: 1h, 2h, 30m
+interval: "2h"           # POLL_INTERVAL=1h
+
+# RSS 数据源
+# 每个条目：name（展示名）+ rss_url（必填）+ enabled（默认 true）
+# 环境变量覆盖单个数据源: DATASOURCE_XFORUMS_ST=false
+data_sources:
+  xforums_st:
+    name: "Xforums.st"
+    rss_url: "https://xforums.st/forums/-/index.rss"
+    enabled: true
+
+  gerki:
+    name: "gerki"
+    rss_url: "https://forum.gerki.ws/forums/-/index.rss"
+    enabled: true
+
+  blackbones:
+    name: "blackbones"
+    rss_url: "https://blackbones.net/forums/-/index.rss"
+    enabled: true
+
+  hard_tm:
+    name: "hard-tm"
+    rss_url: "https://hard-tm.su/forums/-/index.rss"
+    enabled: true
+
+  ascarding:
+    name: "ascarding"
+    rss_url: "https://ascarding.net/forums/-/index.rss"
+    enabled: true
+
+  htdark:
+    name: "htdark"
+    rss_url: "https://htdark.com/forums/-/index.rss"
+    enabled: true
+
+  niflheim:
+    name: "niflheim"
+    rss_url: "https://niflheim.world/forums/-/index.rss"
+    enabled: true
+
+  mipped:
+    name: "mipped"
+    rss_url: "https://mipped.com/f/forums/-/index.rss"
+    enabled: true
+
+  leakbase:
+    name: "leakbase"
+    rss_url: "https://leakbase.la/forums/-/index.rss"
+    enabled: true
+
+  dublikat:
+    name: "dublikat"
+    rss_url: "https://at.dublikat.club/forums/-/index.rss"
+    enabled: true
+
+  sinister:
+    name: "sinister"
+    rss_url: "https://sinister.ly/syndication.php?fid=9&limit=50"
+    enabled: false        # 默认关闭
+
+  cardforum:
+    name: "cardforum"
+    rss_url: "https://cardforum.cc/syndication.php?limit=50"
+    enabled: true
+
+  ipbmafia:
+    name: "ipbmafia"
+    rss_url: "https://ipbmafia.ru/rss/1-temy.xml/"
+    enabled: true

@@ -1,0 +1,66 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 周报工作流 — 每周五北京时间 15:00 单独生成并推送周报
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: DarkWeb Weekly Report
+
+on:
+  schedule:
+    - cron: '0 15 * * 5'   # 每周五 15:00 北京时间
+      timezone: 'Asia/Shanghai'
+  workflow_dispatch:        # 支持手动触发
+
+permissions:
+  contents: write
+  models: read
+
+jobs:
+  weekly:
+    name: 生成并推送周报
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 拉取最新数据
+        run: git pull --rebase origin main || true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Build
+        run: go build -o tracker ./cmd/tracker
+
+      - name: 生成周报
+        env:
+          LLM_ENABLED:       "false"   # 周报不再重新分析，使用已有评分
+          DISCORD_WEBHOOK:   ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_ENABLED:   ${{ secrets.DISCORD_WEBHOOK != '' && 'true' || 'false' }}
+          DISCORD_SEND_WEEKLY: "true"
+          DISCORD_SEND_NORMAL: "false"
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ENABLED:  ${{ secrets.TELEGRAM_TOKEN != '' && 'true' || 'false' }}
+          DINGTALK_WEBHOOK:  ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET:   ${{ secrets.DINGTALK_SECRET }}
+          DINGTALK_ENABLED:  ${{ secrets.DINGTALK_WEBHOOK != '' && 'true' || 'false' }}
+          NIGHT_SLEEP_ENABLED: "false"
+          DAILY_REPORT_ENABLED: "false"
+          WEEKLY_REPORT_ENABLED: "true"
+          WEEKLY_REPORT_PUSH_ENABLED: "true"
+          SOURCES_HEALTH_CHECK: "false"  # 周报不需要健康检查
+        run: ./tracker --once --config config.yaml --db data_leaks.db
+
+      - name: Commit 周报文件
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "auto: 周报更新 $(date +'%Y-%m-%d') [skip ci]"
+          file_pattern: "archive/Weekly_* rss/weekly_* rss/latest_weekly_rss.xml"
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"

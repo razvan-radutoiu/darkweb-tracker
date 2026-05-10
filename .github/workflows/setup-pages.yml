@@ -1,0 +1,55 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub Pages 配置工作流 — 首次 setup 时手动运行一次
+# 后续 Pages 部署由 tracker.yml 中的 deploy-pages job 完成
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Setup GitHub Pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  pages: write
+  id-token: write
+  contents: read
+
+jobs:
+  setup:
+    name: 初始化 GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 上传 archive/ 目录（若为空则上传占位页）
+      - name: 创建占位页（首次部署）
+        run: |
+          mkdir -p archive
+          if [ ! -f archive/index.html ]; then
+            cat > archive/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="zh-CN">
+          <head><meta charset="UTF-8"><title>DarkWeb Forums Tracker</title>
+          <style>body{background:#0a0e17;color:#00ff41;font-family:'Courier New',monospace;
+          display:flex;justify-content:center;align-items:center;height:100vh;margin:0}
+          .box{text-align:center;border:1px solid #00ff41;padding:40px;}</style>
+          </head>
+          <body><div class="box">
+          <h1>DarkWeb Forums Tracker</h1>
+          <p>首次运行后报告将显示在此处</p>
+          <p style="color:#00e0ff">等待第一次扫描完成...</p>
+          </div></body></html>
+          EOF
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './archive'
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
