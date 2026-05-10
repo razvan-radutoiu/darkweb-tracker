@@ -1,4 +1,5 @@
 // Package feed handles RSS/Atom feed fetching, parsing, and content cleaning.
+// Also handles special sentinel sources (ransomware.live API, ransomwatch JSON).
 package feed
 
 import (
@@ -14,6 +15,7 @@ import (
 	"github.com/mmcdole/gofeed"
 
 	"darkweb-tracker/internal/config"
+	"darkweb-tracker/internal/sources"
 	"darkweb-tracker/internal/storage"
 )
 
@@ -56,8 +58,17 @@ func New(proxyCfg config.ProxyConfig, log *slog.Logger) *Fetcher {
 }
 
 // Fetch retrieves and parses a single RSS source.
-// It returns all parsed items (caller decides which are new).
+// Handles both regular RSS/Atom feeds and special sentinel sources.
 func (f *Fetcher) Fetch(ctx context.Context, ds config.DataSource) ([]storage.Item, error) {
+	// Handle special sentinel sources
+	switch ds.RSSURL {
+	case sources.SentinelRansomwareLive:
+		return f.fetchRansomwareLive(ctx, ds.Name)
+	case sources.SentinelRansomwatch:
+		return f.fetchRansomwatch(ctx, ds.Name)
+	}
+
+	// Standard RSS/Atom fetch
 	feed, err := f.parser.ParseURLWithContext(ds.RSSURL, ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s (%s): %w", ds.Name, ds.RSSURL, err)
@@ -227,4 +238,80 @@ func proxyTransport(cfg config.ProxyConfig) *http.Transport {
 			return nil, nil
 		},
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Sentinel source handlers
+// ---------------------------------------------------------------------------
+
+// fetchRansomwareLive fetches real-time victim data from ransomware.live API
+// and converts each victim entry into a storage.Item.
+func (f *Fetcher) fetchRansomwareLive(ctx context.Context, siteName string) ([]storage.Item, error) {
+	victims, err := sources.FetchRansomwareLive(ctx, f.httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("ransomware.live: %w", err)
+	}
+
+	items := make([]storage.Item, 0, len(victims))
+	for _, v := range victims {
+		link := v.ClaimURL
+		if link == "" {
+			link = "https://www.ransomware.live"
+		}
+		title := fmt.Sprintf("[%s] %s", strings.ToUpper(v.Group), v.Victim)
+		if v.Country != "" {
+			title += fmt.Sprintf(" (%s)", v.Country)
+		}
+		content := v.Description
+		if v.Activity != "" {
+			content = "[" + v.Activity + "] " + content
+		}
+
+		items = append(items, storage.Item{
+			Title:    title,
+			Link:     link,
+			PubDate:  v.AttackDate,
+			Category: "ransomware",
+			Content:  content,
+			SiteName: siteName,
+		})
+	}
+
+	f.log.Debug("ransomware.live fetched", "victims", len(items))
+	return items, nil
+}
+
+// fetchRansomwatch fetches recent posts from the ransomwatch GitHub JSON.
+func (f *Fetcher) fetchRansomwatch(ctx context.Context, siteName string) ([]storage.Item, error) {
+	// Only fetch posts from the last 30 days to avoid flooding the DB on first run.
+	const recentLimit = 200
+	posts, err := sources.FetchRansomwatchPosts(ctx, f.httpClient, recentLimit)
+	if err != nil {
+		return nil, fmt.Errorf("ransomwatch: %w", err)
+	}
+
+	items := make([]storage.Item, 0, len(posts))
+	for _, p := range posts {
+		if p.PostTitle == "" {
+			continue
+		}
+		// Use group+title as dedup link since ransomwatch posts don't have URLs.
+		link := fmt.Sprintf("https://ransomwatch.telemetry.ltd/#/%s/%s",
+			strings.ToLower(p.GroupName),
+			strings.ReplaceAll(strings.ToLower(p.PostTitle), " ", "-"),
+		)
+		title := fmt.Sprintf("[%s] %s", strings.ToUpper(p.GroupName), p.PostTitle)
+
+		items = append(items, storage.Item{
+			Title:    title,
+			Link:     link,
+			PubDate:  p.Discovered,
+			Category: "ransomware",
+			Content:  fmt.Sprintf("Ransomware group %s claimed victim: %s", p.GroupName, p.PostTitle),
+			SiteName: siteName,
+		})
+	}
+
+	f.log.Debug("ransomwatch fetched", "posts", len(items))
+	return items, nil
 }

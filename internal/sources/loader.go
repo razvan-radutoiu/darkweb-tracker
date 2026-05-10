@@ -1,10 +1,26 @@
-// Package sources handles dynamic RSS source loading.
-// Priority: remote sources.yaml > local config > auto-discovery from deepdarkCTI > builtin seeds
+// Package sources handles dynamic RSS source loading from multiple GitHub-maintained lists.
+//
+// Loading priority (highest → lowest):
+//  1. Remote sources.yaml  (manual overrides)
+//  2. Local config.yaml data_sources
+//  3. Auto-discovery from multiple GitHub-maintained lists (runs in parallel)
+//  4. Built-in seed list  (never empty fallback)
+//
+// Auto-discovery sources (all parsed on every startup):
+//   - fastfire/deepdarkCTI forum.md          — dark web forums with ONLINE status
+//   - fastfire/deepdarkCTI ransomware_gang.md — ransomware gang RSS feeds
+//   - adminlove520/DarkWeb-Forums-Tracker     — pre-validated RSS URL list
+//   - joshhighet/ransomwatch posts.json       — live ransomware victim posts
+//   - ransomware.live API                     — real-time ransomware victims
+//   - zer0yu/CyberSecurityRSS OPML            — 1000+ security RSS feeds (breach/leak subset)
+//   - Direct security RSS feeds               — HIBP, BleepingComputer, DDoSecrets, etc.
 package sources
 
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,7 +36,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Remote YAML types (手动维护的补充列表)
+// Remote YAML types
 // ---------------------------------------------------------------------------
 
 type RemoteEntry struct {
@@ -51,26 +67,20 @@ func New(cfg config.SourcesConfig, httpClient *http.Client, log *slog.Logger) *L
 	return &Loader{cfg: cfg, httpClient: httpClient, log: log}
 }
 
-// Load 返回最终合并、去重、存活的源列表。
-//
-// 优先级（高→低）:
-//  1. 远程 sources.yaml（手动补充 / 覆盖）
-//  2. 本地 config.yaml data_sources
-//  3. 自动从 deepdarkCTI 解析 ONLINE 论坛并探测 RSS
-//  4. 内置 seed（兜底，永不为空）
+// Load returns the final merged, deduplicated, alive source list.
 func (l *Loader) Load(ctx context.Context, localSources map[string]config.DataSource) ([]config.DataSource, error) {
-	merged := make(map[string]config.DataSource) // key = normalizeKey(name)
+	merged := make(map[string]config.DataSource)
 
-	// ── Step 1: 内置 seed（最低优先级，先放进去）──────────────────────────
+	// Step 1: Built-in seeds (lowest priority)
 	if !l.cfg.DisableBuiltinSeeds {
 		for _, s := range builtinSeeds {
 			merged[normalizeKey(s.Name)] = s
 		}
 	}
 
-	// ── Step 2: 自动发现（deepdarkCTI）──────────────────────────────────
+	// Step 2: Auto-discovery from all GitHub sources (parallel)
 	if !l.cfg.DisableAutoDiscover {
-		discovered := l.autoDiscover(ctx)
+		discovered := l.autoDiscoverAll(ctx)
 		l.log.Info("auto-discovery complete", "found", len(discovered))
 		for _, ds := range discovered {
 			key := normalizeKey(ds.Name)
@@ -80,50 +90,40 @@ func (l *Loader) Load(ctx context.Context, localSources map[string]config.DataSo
 		}
 	}
 
-	// ── Step 3: 本地 config.yaml data_sources（覆盖同名）────────────────
+	// Step 3: Local config.yaml data_sources
 	for _, ds := range localSources {
-		if ds.RSSURL == "" {
-			continue
+		if ds.RSSURL != "" {
+			merged[normalizeKey(ds.Name)] = ds
 		}
-		merged[normalizeKey(ds.Name)] = ds
 	}
 
-	// ── Step 4: 远程 sources.yaml（最高优先级，完全覆盖）─────────────────
+	// Step 4: Remote sources.yaml (highest priority)
 	if l.cfg.RemoteURL != "" {
 		remote, err := l.fetchRemote(ctx, l.cfg.RemoteURL)
 		if err != nil {
-			l.log.Warn("remote sources fetch failed — continuing without it",
-				"url", l.cfg.RemoteURL, "err", err)
+			l.log.Warn("remote sources fetch failed", "url", l.cfg.RemoteURL, "err", err)
 		} else {
-			l.log.Info("remote sources loaded",
-				"url", l.cfg.RemoteURL,
-				"count", len(remote.Sources),
-				"updated", remote.Updated,
-			)
+			l.log.Info("remote sources loaded", "count", len(remote.Sources), "updated", remote.Updated)
 			for _, e := range remote.Sources {
-				if e.Name == "" || e.RSSURL == "" {
-					continue
-				}
-				merged[normalizeKey(e.Name)] = config.DataSource{
-					Name:    e.Name,
-					RSSURL:  e.RSSURL,
-					Enabled: e.Enabled,
+				if e.Name != "" && e.RSSURL != "" {
+					merged[normalizeKey(e.Name)] = config.DataSource{
+						Name: e.Name, RSSURL: e.RSSURL, Enabled: e.Enabled,
+					}
 				}
 			}
 		}
 	}
 
-	// 收集 enabled 的源
+	// Collect enabled
 	var active []config.DataSource
 	for _, ds := range merged {
 		if ds.Enabled {
 			active = append(active, ds)
 		}
 	}
-
 	l.log.Info("sources merged", "total", len(merged), "enabled", len(active))
 
-	// ── Step 5: 健康检查（并发 HEAD 探活）────────────────────────────────
+	// Step 5: Health check
 	if l.cfg.HealthCheck && len(active) > 0 {
 		active = l.healthFilter(ctx, active)
 	}
@@ -131,97 +131,397 @@ func (l *Loader) Load(ctx context.Context, localSources map[string]config.DataSo
 	if len(active) == 0 {
 		return nil, fmt.Errorf("no active RSS sources after loading")
 	}
-
 	return active, nil
 }
 
 // ---------------------------------------------------------------------------
-// Auto-discovery: 解析 deepdarkCTI forum.md，批量探测 RSS
+// Auto-discovery orchestrator — all sources run in parallel
 // ---------------------------------------------------------------------------
 
-const deepdarkCTIURL = "https://raw.githubusercontent.com/fastfire/deepdarkCTI/main/forum.md"
+func (l *Loader) autoDiscoverAll(ctx context.Context) []config.DataSource {
+	type discoveryFunc func(context.Context) []config.DataSource
 
-// 论坛软件 RSS 路径规律（按优先级排序）
-var rssPathCandidates = []string{
-	"/forums/-/index.rss",          // XenForo
-	"/syndication.php?limit=50",    // MyBB
-	"/external.php?type=RSS2",      // vBulletin / MyBB
-	"/rss/1-temy.xml/",             // IPBoard
-	"/feed/",                       // WordPress / Discourse
-	"/rss.xml",                     // Generic
-	"/index.rss",                   // Generic
+	discoverers := []struct {
+		name string
+		fn   discoveryFunc
+	}{
+		{"deepdarkCTI/forum.md", l.discoverDeepDarkCTIForums},
+		{"deepdarkCTI/ransomware_gang.md", l.discoverDeepDarkCTIRansomware},
+		{"adminlove520/rss_dataleak.yaml", l.discoverAdminloveYAML},
+		{"ransomware.live API", l.discoverRansomwareLive},
+		{"ransomwatch/posts.json", l.discoverRansomwatch},
+		{"zer0yu/CyberSecurityRSS OPML", l.discoverCyberSecOPML},
+		{"direct security RSS feeds", l.discoverDirectFeeds},
+	}
+
+	type result struct {
+		name    string
+		sources []config.DataSource
+	}
+	results := make(chan result, len(discoverers))
+	var wg sync.WaitGroup
+
+	for _, d := range discoverers {
+		wg.Add(1)
+		go func(name string, fn discoveryFunc) {
+			defer wg.Done()
+			sources := fn(ctx)
+			results <- result{name: name, sources: sources}
+		}(d.name, d.fn)
+	}
+
+	go func() { wg.Wait(); close(results) }()
+
+	// Merge all discovered, dedup by name
+	seen := make(map[string]bool)
+	var all []config.DataSource
+	for r := range results {
+		l.log.Info("discovered", "source", r.name, "count", len(r.sources))
+		for _, ds := range r.sources {
+			key := normalizeKey(ds.Name)
+			if !seen[key] {
+				seen[key] = true
+				all = append(all, ds)
+			}
+		}
+	}
+	return all
 }
 
-// 匹配 Markdown 表格中 ONLINE 的 clearnet 条目
+// ---------------------------------------------------------------------------
+// 1. fastfire/deepdarkCTI — forum.md (ONLINE clearnet forums → probe RSS)
+// ---------------------------------------------------------------------------
+
+const deepdarkCTIForumURL = "https://raw.githubusercontent.com/fastfire/deepdarkCTI/main/forum.md"
+
 var (
-	reMDRow    = regexp.MustCompile(`\[([^\]]+)\]\((https://[^)]+)\)[^|]*ONLINE`)
-	reOnionURL = regexp.MustCompile(`\.onion`)
+	reMDOnline  = regexp.MustCompile(`\[([^\]]+)\]\((https://[^)]+)\)[^|]*ONLINE`)
+	reOnion     = regexp.MustCompile(`\.onion`)
+	rssPathList = []string{
+		"/forums/-/index.rss",
+		"/syndication.php?limit=50",
+		"/external.php?type=RSS2",
+		"/rss/1-temy.xml/",
+		"/feed/",
+		"/rss.xml",
+		"/index.rss",
+	}
 )
 
-func (l *Loader) autoDiscover(ctx context.Context) []config.DataSource {
-	l.log.Info("auto-discovering sources from deepdarkCTI", "url", deepdarkCTIURL)
-
-	// 拉取 forum.md
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, deepdarkCTIURL, nil)
-	if err != nil {
-		l.log.Warn("deepdarkCTI: build request failed", "err", err)
-		return nil
-	}
-	req.Header.Set("User-Agent", "darkweb-tracker/1.0 (github.com)")
-
-	resp, err := l.httpClient.Do(req)
-	if err != nil {
-		l.log.Warn("deepdarkCTI: fetch failed", "err", err)
-		return nil
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		l.log.Warn("deepdarkCTI: bad status", "code", resp.StatusCode)
+func (l *Loader) discoverDeepDarkCTIForums(ctx context.Context) []config.DataSource {
+	body := l.fetchText(ctx, deepdarkCTIForumURL, 2*1024*1024)
+	if body == "" {
 		return nil
 	}
 
-	// 解析所有 ONLINE clearnet URL
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-	if err != nil {
-		l.log.Warn("deepdarkCTI: read failed", "err", err)
-		return nil
-	}
-
-	var candidates []struct{ name, base string }
+	var candidates []forumCandidate
 	seen := make(map[string]bool)
 
-	scanner := bufio.NewScanner(strings.NewReader(string(body)))
+	scanner := bufio.NewScanner(strings.NewReader(body))
 	for scanner.Scan() {
-		line := scanner.Text()
-		matches := reMDRow.FindAllStringSubmatch(line, -1)
-		for _, m := range matches {
-			name := strings.TrimSpace(m[1])
-			baseURL := strings.TrimRight(m[2], "/")
-			if reOnionURL.MatchString(baseURL) {
-				continue // 跳过 .onion
-			}
-			if seen[baseURL] {
+		for _, m := range reMDOnline.FindAllStringSubmatch(scanner.Text(), -1) {
+			base := strings.TrimRight(m[2], "/")
+			if reOnion.MatchString(base) || seen[base] {
 				continue
 			}
-			seen[baseURL] = true
-			candidates = append(candidates, struct{ name, base string }{name, baseURL})
+			seen[base] = true
+			candidates = append(candidates, forumCandidate{sanitizeName(m[1]), base})
 		}
 	}
 
-	l.log.Info("deepdarkCTI: parsed ONLINE clearnet forums", "count", len(candidates))
+	return l.probeRSSBatch(ctx, candidates)
+}
 
-	// 并发探测 RSS（限制并发数避免被封）
+// ---------------------------------------------------------------------------
+// 2. fastfire/deepdarkCTI — ransomware_gang.md (extract RSS Feed column)
+// ---------------------------------------------------------------------------
+
+const deepdarkCTIRansomURL = "https://raw.githubusercontent.com/fastfire/deepdarkCTI/main/ransomware_gang.md"
+
+var reRSSInCell = regexp.MustCompile(`https?://[^\s|<>"]+\.(?:rss|xml|atom)|https?://[^\s|<>"]+/(?:rss|feed|atom)/?(?:[^|\s<>"]*)?`)
+
+func (l *Loader) discoverDeepDarkCTIRansomware(ctx context.Context) []config.DataSource {
+	body := l.fetchText(ctx, deepdarkCTIRansomURL, 2*1024*1024)
+	if body == "" {
+		return nil
+	}
+
+	var sources []config.DataSource
+	seen := make(map[string]bool)
+
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		if lineNum <= 2 { // skip header rows
+			continue
+		}
+		line := scanner.Text()
+		if !strings.Contains(line, "ONLINE") {
+			continue
+		}
+		// Extract RSS URL from the RSS Feed column (5th column)
+		cols := strings.Split(line, "|")
+		if len(cols) < 5 {
+			continue
+		}
+		// Name from first column
+		nameMatch := regexp.MustCompile(`\[([^\]]+)\]`).FindStringSubmatch(cols[1])
+		name := ""
+		if len(nameMatch) > 1 {
+			name = sanitizeName(nameMatch[1])
+		}
+		// Search RSS in all columns
+		for _, col := range cols {
+			rssURL := reRSSInCell.FindString(col)
+			if rssURL != "" && !seen[rssURL] && !reOnion.MatchString(rssURL) {
+				seen[rssURL] = true
+				if name == "" {
+					name = rssURL
+				}
+				sources = append(sources, config.DataSource{
+					Name: name + " (ransom)", RSSURL: rssURL, Enabled: true,
+				})
+			}
+		}
+	}
+	return sources
+}
+
+// ---------------------------------------------------------------------------
+// 3. adminlove520/DarkWeb-Forums-Tracker — rss_dataleak.yaml (pre-validated!)
+// ---------------------------------------------------------------------------
+
+const adminloveYAMLURL = "https://raw.githubusercontent.com/adminlove520/DarkWeb-Forums-Tracker/main/rss_dataleak.yaml"
+
+func (l *Loader) discoverAdminloveYAML(ctx context.Context) []config.DataSource {
+	body := l.fetchText(ctx, adminloveYAMLURL, 512*1024)
+	if body == "" {
+		return nil
+	}
+
+	// Format: "name":\n  rss_url: "URL"\n  website_name: "Name"
+	var raw map[string]struct {
+		RSSURL      string `yaml:"rss_url"`
+		WebsiteName string `yaml:"website_name"`
+	}
+	if err := yaml.Unmarshal([]byte(body), &raw); err != nil {
+		l.log.Warn("adminlove YAML parse failed", "err", err)
+		return nil
+	}
+
+	var sources []config.DataSource
+	for _, v := range raw {
+		if v.RSSURL == "" {
+			continue
+		}
+		name := v.WebsiteName
+		if name == "" {
+			name = v.RSSURL
+		}
+		sources = append(sources, config.DataSource{
+			Name: name, RSSURL: v.RSSURL, Enabled: true,
+		})
+	}
+	return sources
+}
+
+// ---------------------------------------------------------------------------
+// 4. ransomware.live API — real-time victim posts (convert to internal items)
+// ---------------------------------------------------------------------------
+
+const ransomwareLiveURL = "https://api.ransomware.live/v2/recentvictims"
+
+type ransomwareLiveVictim struct {
+	Victim      string `json:"victim"`
+	Group       string `json:"group"`
+	AttackDate  string `json:"attackdate"`
+	ClaimURL    string `json:"claim_url"`
+	Description string `json:"description"`
+	Country     string `json:"country"`
+	Activity    string `json:"activity"`
+}
+
+// RansomwareLiveItems is stored for the scheduler to process directly.
+// The loader wraps it as a virtual "RSS" source using a sentinel URL.
+const ransomwareLiveSentinel = "internal://ransomware.live/victims"
+
+func (l *Loader) discoverRansomwareLive(ctx context.Context) []config.DataSource {
+	// We add a sentinel source; the fetcher handles it specially.
+	return []config.DataSource{{
+		Name:    "ransomware.live",
+		RSSURL:  ransomwareLiveSentinel,
+		Enabled: true,
+	}}
+}
+
+// FetchRansomwareLive retrieves recent victims from ransomware.live API.
+// Called by the feed fetcher when it encounters the sentinel URL.
+func FetchRansomwareLive(ctx context.Context, client *http.Client) ([]ransomwareLiveVictim, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ransomwareLiveURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "darkweb-tracker/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ransomware.live: HTTP %d", resp.StatusCode)
+	}
+	var victims []ransomwareLiveVictim
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&victims); err != nil {
+		return nil, err
+	}
+	return victims, nil
+}
+
+// ---------------------------------------------------------------------------
+// 5. joshhighet/ransomwatch — posts.json (recent ransomware posts)
+// ---------------------------------------------------------------------------
+
+const ransomwatchPostsURL = "https://raw.githubusercontent.com/joshhighet/ransomwatch/main/posts.json"
+
+type ransomwatchPost struct {
+	PostTitle string `json:"post_title"`
+	GroupName string `json:"group_name"`
+	Discovered string `json:"discovered"`
+}
+
+const ransomwatchSentinel = "internal://ransomwatch/posts"
+
+func (l *Loader) discoverRansomwatch(ctx context.Context) []config.DataSource {
+	return []config.DataSource{{
+		Name:    "ransomwatch",
+		RSSURL:  ransomwatchSentinel,
+		Enabled: true,
+	}}
+}
+
+// FetchRansomwatchPosts retrieves recent posts from ransomwatch.
+func FetchRansomwatchPosts(ctx context.Context, client *http.Client, limit int) ([]ransomwatchPost, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ransomwatchPostsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "darkweb-tracker/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var posts []ransomwatchPost
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 20*1024*1024)).Decode(&posts); err != nil {
+		return nil, err
+	}
+	// Return only the most recent posts (already sorted newest first in the file)
+	if limit > 0 && len(posts) > limit {
+		posts = posts[:limit]
+	}
+	return posts, nil
+}
+
+// ---------------------------------------------------------------------------
+// 6. zer0yu/CyberSecurityRSS — OPML (extract breach/leak related feeds)
+// ---------------------------------------------------------------------------
+
+const cyberSecOPMLURL = "https://raw.githubusercontent.com/zer0yu/CyberSecurityRSS/master/CyberSecurityRSS.opml"
+
+// Keywords to filter relevant feeds from the 1000+ OPML list
+var leakKeywords = []string{
+	"breach", "leak", "dark", "ransomware", "malware", "threat", "intel",
+	"security news", "vulnerability", "exploit", "hacking", "underground",
+	"incident", "cybercrime", "infosec",
+}
+
+type opmlOutline struct {
+	Text     string        `xml:"text,attr"`
+	Title    string        `xml:"title,attr"`
+	XMLUrl   string        `xml:"xmlUrl,attr"`
+	HTMLUrl  string        `xml:"htmlUrl,attr"`
+	Outlines []opmlOutline `xml:"outline"`
+}
+
+type opmlBody struct {
+	Outlines []opmlOutline `xml:"outline"`
+}
+
+type opmlDoc struct {
+	Body opmlBody `xml:"body"`
+}
+
+func (l *Loader) discoverCyberSecOPML(ctx context.Context) []config.DataSource {
+	body := l.fetchText(ctx, cyberSecOPMLURL, 5*1024*1024)
+	if body == "" {
+		return nil
+	}
+
+	var doc opmlDoc
+	if err := xml.Unmarshal([]byte(body), &doc); err != nil {
+		l.log.Warn("OPML parse failed", "err", err)
+		return nil
+	}
+
+	var sources []config.DataSource
+	var walkOutlines func(outlines []opmlOutline)
+	walkOutlines = func(outlines []opmlOutline) {
+		for _, o := range outlines {
+			if o.XMLUrl != "" {
+				label := strings.ToLower(o.Text + " " + o.Title)
+				for _, kw := range leakKeywords {
+					if strings.Contains(label, kw) {
+						sources = append(sources, config.DataSource{
+							Name:    o.Text,
+							RSSURL:  o.XMLUrl,
+							Enabled: true,
+						})
+						break
+					}
+				}
+			}
+			walkOutlines(o.Outlines)
+		}
+	}
+	walkOutlines(doc.Body.Outlines)
+	return sources
+}
+
+// ---------------------------------------------------------------------------
+// 7. Direct security RSS feeds (curated high-signal list)
+// ---------------------------------------------------------------------------
+
+func (l *Loader) discoverDirectFeeds(_ context.Context) []config.DataSource {
+	return []config.DataSource{
+		// Breach/leak news
+		{Name: "HaveIBeenPwned", RSSURL: "https://feeds.feedburner.com/HaveIBeenPwnedLatestBreaches", Enabled: true},
+		{Name: "BleepingComputer", RSSURL: "https://www.bleepingcomputer.com/feed/", Enabled: true},
+		{Name: "DDoSecrets", RSSURL: "https://ddosecrets.substack.com/feed", Enabled: true},
+		{Name: "TroyHunt", RSSURL: "https://www.troyhunt.com/rss/", Enabled: true},
+		{Name: "KrebsOnSecurity", RSSURL: "https://krebsonsecurity.com/feed/", Enabled: true},
+		// Exploit/vulnerability
+		{Name: "ExploitDB", RSSURL: "https://www.exploit-db.com/rss.xml", Enabled: true},
+		{Name: "0day.today", RSSURL: "https://0day.today/rss/", Enabled: true},
+		{Name: "VulnDB", RSSURL: "https://vuldb.com/?rss.recent", Enabled: true},
+		// Ransomware tracking
+		{Name: "RansomNews", RSSURL: "https://ransomfeed.it/rss.php", Enabled: true},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RSS probe helpers (for deepdarkCTI forum discovery)
+// ---------------------------------------------------------------------------
+
+type forumCandidate struct{ name, base string }
+
+func (l *Loader) probeRSSBatch(ctx context.Context, candidates []forumCandidate) []config.DataSource {
 	type probeResult struct {
 		ds  config.DataSource
 		ok  bool
 	}
-
 	results := make([]probeResult, len(candidates))
-	sem := make(chan struct{}, 15) // 最多 15 个并发
+	sem := make(chan struct{}, 15)
 	var wg sync.WaitGroup
 
 	for i, c := range candidates {
@@ -230,56 +530,42 @@ func (l *Loader) autoDiscover(ctx context.Context) []config.DataSource {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-
 			rssURL := l.probeRSS(ctx, base)
 			if rssURL != "" {
-				results[idx] = probeResult{
-					ok: true,
-					ds: config.DataSource{
-						Name:    sanitizeName(name),
-						RSSURL:  rssURL,
-						Enabled: true,
-					},
-				}
+				results[idx] = probeResult{ok: true, ds: config.DataSource{
+					Name: sanitizeName(name), RSSURL: rssURL, Enabled: true,
+				}}
 			}
 		}(i, c.name, c.base)
 	}
-
 	wg.Wait()
 
-	var discovered []config.DataSource
+	var sources []config.DataSource
 	for _, r := range results {
 		if r.ok {
-			discovered = append(discovered, r.ds)
+			sources = append(sources, r.ds)
 		}
 	}
-
-	return discovered
+	return sources
 }
 
-// probeRSS 依次尝试各 RSS 路径，返回第一个有效的 RSS URL。
 func (l *Loader) probeRSS(ctx context.Context, baseURL string) string {
-	for _, path := range rssPathCandidates {
-		url := baseURL + path
-		if l.isValidRSS(ctx, url) {
-			return url
+	for _, path := range rssPathList {
+		if l.isValidRSS(ctx, baseURL+path) {
+			return baseURL + path
 		}
 	}
 	return ""
 }
 
-// isValidRSS 发送 GET 请求，检查响应是否为合法 RSS/Atom XML。
 func (l *Loader) isValidRSS(ctx context.Context, url string) bool {
 	reqCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
-
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return false
 	}
-	req.Header.Set("User-Agent",
-		"Mozilla/5.0 (compatible; DarkWebTracker/1.0; +https://github.com)")
-
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; DarkWebTracker/1.0)")
 	resp, err := l.httpClient.Do(req)
 	if err != nil || resp.StatusCode >= 400 {
 		if resp != nil {
@@ -288,16 +574,49 @@ func (l *Loader) isValidRSS(ctx context.Context, url string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-
-	// 只读前 4KB 判断是否是 RSS
 	buf := make([]byte, 4096)
 	n, _ := resp.Body.Read(buf)
-	snippet := string(buf[:n])
+	s := string(buf[:n])
+	return strings.Contains(s, "<rss") || strings.Contains(s, "<feed") ||
+		strings.Contains(s, "<channel>") || strings.Contains(s, "<?xml")
+}
 
-	return strings.Contains(snippet, "<rss") ||
-		strings.Contains(snippet, "<feed") ||
-		strings.Contains(snippet, "<channel>") ||
-		strings.Contains(snippet, "<?xml")
+// ---------------------------------------------------------------------------
+// Health check
+// ---------------------------------------------------------------------------
+
+func (l *Loader) healthFilter(ctx context.Context, sources []config.DataSource) []config.DataSource {
+	var (
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, 10)
+		results []config.DataSource
+	)
+	for _, ds := range sources {
+		// Sentinel URLs bypass health check
+		if strings.HasPrefix(ds.RSSURL, "internal://") {
+			mu.Lock()
+			results = append(results, ds)
+			mu.Unlock()
+			continue
+		}
+		wg.Add(1)
+		go func(src config.DataSource) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if l.isValidRSS(ctx, src.RSSURL) {
+				mu.Lock()
+				results = append(results, src)
+				mu.Unlock()
+			} else {
+				l.log.Warn("health check failed", "name", src.Name, "url", src.RSSURL)
+			}
+		}(ds)
+	}
+	wg.Wait()
+	l.log.Info("health check done", "alive", len(results), "dead", len(sources)-len(results))
+	return results
 }
 
 // ---------------------------------------------------------------------------
@@ -306,94 +625,58 @@ func (l *Loader) isValidRSS(ctx context.Context, url string) bool {
 
 func (l *Loader) fetchRemote(ctx context.Context, rawURL string) (*RemoteSourceFile, error) {
 	url := expandGitHubURL(rawURL)
-
-	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+	body := l.fetchText(ctx, url, 512*1024)
+	if body == "" {
+		return nil, fmt.Errorf("empty response from %s", url)
 	}
-	req.Header.Set("User-Agent", "darkweb-tracker/1.0")
-
-	resp, err := l.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-
 	var file RemoteSourceFile
-	if err := yaml.Unmarshal(body, &file); err != nil {
+	if err := yaml.Unmarshal([]byte(body), &file); err != nil {
 		return nil, fmt.Errorf("parse YAML: %w", err)
 	}
-
 	return &file, nil
 }
+
+// ---------------------------------------------------------------------------
+// Generic HTTP text fetch
+// ---------------------------------------------------------------------------
+
+func (l *Loader) fetchText(ctx context.Context, url string, maxBytes int64) string {
+	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "darkweb-tracker/1.0 (github.com)")
+	resp, err := l.httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	return string(body)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 func expandGitHubURL(s string) string {
 	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
 		return s
 	}
 	parts := strings.SplitN(s, "/", 4)
-	switch len(parts) {
-	case 3:
-		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/main/%s",
-			parts[0], parts[1], parts[2])
-	case 4:
-		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s",
-			parts[0], parts[1], parts[2], parts[3])
-	default:
-		return s
+	if len(parts) == 3 {
+		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/main/%s", parts[0], parts[1], parts[2])
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Health check
-// ---------------------------------------------------------------------------
-
-func (l *Loader) healthFilter(ctx context.Context, sources []config.DataSource) []config.DataSource {
-	results := make([]config.DataSource, 0, len(sources))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 10)
-
-	for _, ds := range sources {
-		wg.Add(1)
-		go func(src config.DataSource) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			if l.isValidRSS(ctx, src.RSSURL) {
-				mu.Lock()
-				results = append(results, src)
-				mu.Unlock()
-			} else {
-				l.log.Warn("health check failed — skipping",
-					"name", src.Name, "url", src.RSSURL)
-			}
-		}(ds)
+	if len(parts) == 4 {
+		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", parts[0], parts[1], parts[2], parts[3])
 	}
-
-	wg.Wait()
-	l.log.Info("health check complete",
-		"checked", len(sources), "alive", len(results),
-		"dead", len(sources)-len(results))
-	return results
+	return s
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 func normalizeKey(name string) string {
 	return strings.ToLower(strings.NewReplacer(
@@ -401,23 +684,28 @@ func normalizeKey(name string) string {
 	).Replace(strings.TrimSpace(name)))
 }
 
-// sanitizeName 清理从 Markdown 解析到的论坛名（去掉 Deep/Dark 后缀等）
 func sanitizeName(name string) string {
-	name = regexp.MustCompile(`(?i)\s*\((?:deep|dark|mirror|backup)[^)]*\)`).ReplaceAllString(name, "")
+	name = regexp.MustCompile(`(?i)\s*\((?:deep|dark|mirror|backup|onion)[^)]*\)`).ReplaceAllString(name, "")
 	return strings.TrimSpace(name)
 }
 
 // ---------------------------------------------------------------------------
-// Built-in seeds（最后兜底，仅当发现为空时使用）
+// Sentinel URL constants (used by feed fetcher to detect special sources)
+// ---------------------------------------------------------------------------
+
+const (
+	SentinelRansomwareLive = ransomwareLiveSentinel
+	SentinelRansomwatch    = ransomwatchSentinel
+)
+
+// ---------------------------------------------------------------------------
+// Built-in seeds (last resort)
 // ---------------------------------------------------------------------------
 
 var builtinSeeds = []config.DataSource{
-	{Name: "gerki", RSSURL: "https://forum.gerki.ws/forums/-/index.rss", Enabled: true},
-	{Name: "blackbones", RSSURL: "https://blackbones.net/forums/-/index.rss", Enabled: true},
+	{Name: "leakbase", RSSURL: "https://leakbase.la/forums/-/index.rss", Enabled: true},
 	{Name: "hard-tm", RSSURL: "https://hard-tm.su/forums/-/index.rss", Enabled: true},
 	{Name: "mipped", RSSURL: "https://mipped.com/f/forums/-/index.rss", Enabled: true},
-	{Name: "leakbase", RSSURL: "https://leakbase.la/forums/-/index.rss", Enabled: true},
-	{Name: "dublikat", RSSURL: "https://at.dublikat.club/forums/-/index.rss", Enabled: true},
 	{Name: "cardforum", RSSURL: "https://cardforum.cc/syndication.php?limit=50", Enabled: true},
 	{Name: "ipbmafia", RSSURL: "https://ipbmafia.ru/rss/1-temy.xml/", Enabled: true},
 }
