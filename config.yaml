@@ -2,31 +2,24 @@
 # 环境变量优先级高于此文件中的所有配置项
 
 # ── RSS 源加载策略 ────────────────────────────────────────────────────────────
-# 加载优先级: 远程 URL > 本地 data_sources > 内置 seed 列表
+# 加载优先级（高→低）:
+#   1. 远程 sources.yaml（手动补充/覆盖）
+#   2. 本地 data_sources
+#   3. 自动发现（fastfire/deepdarkCTI，每次启动自动更新）
+#   4. 内置 seed（兜底）
 sources:
-  # 远程源文件 URL（推荐：填写你自己 fork 后维护的地址）
-  # 支持完整 HTTPS URL 或 GitHub 简写 "owner/repo/branch/path"
-  remote_url: ""              # SOURCES_REMOTE_URL
-  #
-  # 推荐远程源（任选其一，或 fork 后自行维护）：
-  #
-  # 【选项 A】使用本项目维护的社区源列表（随时更新）：
-  #   remote_url: "your-username/darkweb-tracker/main/sources.yaml"
-  #
-  # 【选项 B】直接用 raw GitHub URL：
-  #   remote_url: "https://raw.githubusercontent.com/your-username/darkweb-tracker/main/sources.yaml"
-  #
-  # 【选项 C】完全离线，只用下方 data_sources + 内置 seeds：
-  #   remote_url: ""
+  # 【核心功能】自动从 fastfire/deepdarkCTI 解析 ONLINE 论坛并探测 RSS
+  # 每次程序启动时自动拉取最新列表，无需手动维护
+  disable_auto_discover: false    # SOURCES_NO_AUTODISCOVER=true 可关闭
 
-  # 当远程和本地都有同名源时，是否让本地配置优先（默认远程优先）
-  local_overrides_remote: false   # SOURCES_LOCAL_OVERRIDES=true
+  # 手动补充源（优先级最高，可覆盖自动发现的同名源）
+  # 留空 = 只用自动发现 + 内置 seed
+  remote_url: ""                  # SOURCES_REMOTE_URL
 
-  # 启动时对所有源做 HEAD 健康检查，自动跳过无法访问的 URL
-  # 推荐开启，可避免在死链上浪费时间（增加约 5-10 秒启动时间）
-  health_check: true              # SOURCES_HEALTH_CHECK=false
+  # 健康检查（自动发现已内置探活；此项对手动补充源生效）
+  health_check: false             # SOURCES_HEALTH_CHECK=true
 
-  # 禁用内置 seed 列表（若你完全自己管理源列表）
+  # 内置兜底 seed（自动发现失败时保底）
   disable_builtin_seeds: false    # SOURCES_NO_SEEDS=true
 
 # ── AI 分析配置 ─────────────────────────────────────────────────────────────

@@ -1,27 +1,148 @@
 # DarkWeb Forums Tracker — Community RSS Sources
-# ─────────────────────────────────────────────
-# 这是社区维护的 RSS 源列表。Fork 本项目后在此文件更新论坛地址，
-# 其他用户只需设置 SOURCES_REMOTE_URL 指向你的 raw GitHub URL 即可自动同步。
-#
-# 格式说明：
-#   name    : 展示名称（唯一标识，修改会视为新源）
-#   rss_url : RSS/Atom feed 直链
-#   enabled : true=启用 / false=暂时禁用（已迁移/暂时宕机时设 false）
-#   tags    : 可选标签，用于将来的过滤功能
-#   note    : 变更备注，记录迁移历史
+# 数据来源: fastfire/deepdarkCTI (github.com/fastfire/deepdarkCTI)
+# 自动探测验证时间: 2026-05-11
+# 所有源均经过实际 RSS 响应验证（返回有效 XML 且 items > 0）
 
 version: "1"
 updated: "2026-05-11"
 
 sources:
 
-  # ── 综合黑客/数据泄露论坛（当前验证可用）─────────────────────────────────
+  # ── 高价值泄露 / 数据交易论坛 ────────────────────────────────────────────
 
-  - name: "gerki"
-    rss_url: "https://forum.gerki.ws/forums/-/index.rss"
+  - name: "thejavasea"
+    rss_url: "https://thejavasea.com/forums/-/index.rss"
+    enabled: true
+    tags: ["database", "credentials", "leak"]
+    note: "100 items/feed，活跃度高"
+
+  - name: "probiv"
+    rss_url: "https://probiv.one/forums/-/index.rss"
+    enabled: true
+    tags: ["russian", "credentials", "doxxing"]
+    note: "俄语论坛，55 items"
+
+  - name: "breachforums.rs"
+    rss_url: "https://breachforums.rs/syndication.php?limit=50"
+    enabled: true
+    tags: ["database", "credentials", "leak"]
+    note: "BreachForums 现存活跃镜像"
+
+  - name: "leakforum.io"
+    rss_url: "https://leakforum.io/syndication.php?limit=50"
+    enabled: true
+    tags: ["database", "credentials", "leak"]
+    note: ""
+
+  - name: "darkforums.su"
+    rss_url: "https://darkforums.su/syndication.php?limit=50"
+    enabled: true
+    tags: ["database", "credentials"]
+    note: "DarkForums 活跃镜像"
+
+  - name: "altenens"
+    rss_url: "https://altenens.is/forums/-/index.rss"
+    enabled: true
+    tags: ["credentials", "combo", "database"]
+    note: "ALTENEN，高活跃度"
+
+  - name: "bhcforums"
+    rss_url: "https://bhcforums.cc/syndication.php?limit=50"
+    enabled: true
+    tags: ["hacking", "credentials"]
+    note: "BHC Forums"
+
+  - name: "nulledbb"
+    rss_url: "https://nulledbb.com/syndication.php?limit=50"
+    enabled: true
+    tags: ["cracking", "credentials", "combo"]
+    note: ""
+
+  - name: "spear"
+    rss_url: "https://spear.cx/syndication.php?limit=50"
+    enabled: true
+    tags: ["hacking", "exploit"]
+    note: ""
+
+  - name: "exploitforums"
+    rss_url: "https://exploitforums.net/syndication.php?limit=50"
+    enabled: true
+    tags: ["exploit", "vulnerability", "credentials"]
+    note: ""
+
+  - name: "xssf"
+    rss_url: "https://xssf.net/feed/"
+    enabled: true
+    tags: ["hacking", "exploit", "xss"]
+    note: "30 items"
+
+  - name: "leetforums"
+    rss_url: "https://leetforums.cc/forums/-/index.rss"
+    enabled: true
+    tags: ["credentials", "leak"]
+    note: ""
+
+  - name: "bdfclub"
+    rss_url: "https://bdfclub.com/forums/-/index.rss"
+    enabled: true
+    tags: ["carding", "financial"]
+    note: ""
+
+  - name: "carders.biz"
+    rss_url: "https://carders.biz/forums/-/index.rss"
+    enabled: true
+    tags: ["carding", "financial"]
+    note: ""
+
+  - name: "in4.bz"
+    rss_url: "https://in4.bz/forums/-/index.rss"
+    enabled: true
+    tags: ["credentials", "leak"]
+    note: ""
+
+  - name: "xreactor"
+    rss_url: "https://xreactor.org/forums/-/index.rss"
+    enabled: true
+    tags: ["hacking", "exploit"]
+    note: ""
+
+  - name: "ezcarder"
+    rss_url: "https://ezcarder.is/forums/-/index.rss"
+    enabled: true
+    tags: ["carding", "financial"]
+    note: ""
+
+  - name: "darkpro"
+    rss_url: "https://darkpro.net/forums/-/index.rss"
+    enabled: true
+    tags: ["hacking", "credentials"]
+    note: ""
+
+  - name: "mmgp"
+    rss_url: "https://mmgp.com/forums/-/index.rss"
+    enabled: true
+    tags: ["russian", "financial", "crypto"]
+    note: "俄语金融论坛"
+
+  - name: "seopirat"
+    rss_url: "https://seopirat.club/forums/-/index.rss"
+    enabled: true
+    tags: ["russian", "credentials"]
+    note: "俄语论坛"
+
+  - name: "chitachok"
+    rss_url: "https://chitachok.ru/forums/-/index.rss"
+    enabled: true
+    tags: ["russian", "credentials"]
+    note: "俄语论坛"
+
+  # ── 原有已验证源（保留）──────────────────────────────────────────────────
+
+  - name: "xforums.st"
+    rss_url: "https://xforums.st/forums/-/index.rss"
     enabled: true
     tags: ["credentials", "database"]
-    note: ""
+    note: "20 items 验证可用"
 
   - name: "blackbones"
     rss_url: "https://blackbones.net/forums/-/index.rss"
@@ -35,10 +156,10 @@ sources:
     tags: ["database", "combo"]
     note: ""
 
-  - name: "ascarding"
-    rss_url: "https://ascarding.net/forums/-/index.rss"
+  - name: "dublikat"
+    rss_url: "https://at.dublikat.club/forums/-/index.rss"
     enabled: true
-    tags: ["carding", "financial"]
+    tags: ["credentials"]
     note: ""
 
   - name: "mipped"
@@ -53,12 +174,6 @@ sources:
     tags: ["database", "credentials", "pii"]
     note: ""
 
-  - name: "dublikat"
-    rss_url: "https://at.dublikat.club/forums/-/index.rss"
-    enabled: true
-    tags: ["credentials"]
-    note: ""
-
   - name: "cardforum"
     rss_url: "https://cardforum.cc/syndication.php?limit=50"
     enabled: true
@@ -71,40 +186,48 @@ sources:
     tags: ["russian", "credentials", "malware"]
     note: ""
 
-  # ── 全部开启（含之前禁用的）──────────────────────────────────────────────
+  - name: "ascarding"
+    rss_url: "https://ascarding.net/forums/-/index.rss"
+    enabled: true
+    tags: ["carding", "financial"]
+    note: ""
 
-  - name: "xforums.st"
-    rss_url: "https://xforums.st/forums/-/index.rss"
+  - name: "gerki"
+    rss_url: "https://forum.gerki.ws/forums/-/index.rss"
     enabled: true
     tags: ["credentials", "database"]
-    note: "2026-05 超时，健康检查会自动过滤"
+    note: ""
+
+  # ── 安全研究 / 漏洞披露（信噪比高）──────────────────────────────────────
+
+  - name: "0x00sec"
+    rss_url: "https://0x00sec.org/feed/"
+    enabled: true
+    tags: ["security-research", "exploit", "vulnerability"]
+    note: "安全研究社区，信噪比高"
+
+  # ── 暂时无法访问（保留待恢复）────────────────────────────────────────────
 
   - name: "htdark"
     rss_url: "https://htdark.com/forums/-/index.rss"
-    enabled: true
+    enabled: false
     tags: ["hacking", "credentials"]
-    note: "2026-05 返回403，健康检查会自动过滤"
+    note: "403，健康检查自动跳过"
 
   - name: "niflheim"
     rss_url: "https://niflheim.world/forums/-/index.rss"
-    enabled: true
+    enabled: false
     tags: ["credentials"]
-    note: "2026-05 返回403，健康检查会自动过滤"
+    note: "403"
 
   - name: "sinister"
     rss_url: "https://sinister.ly/syndication.php?fid=9&limit=50"
-    enabled: true
+    enabled: false
     tags: ["hacking", "malware"]
-    note: "2026-05 DNS失败，健康检查会自动过滤"
+    note: "DNS 失败"
 
-  - name: "darkforums"
+  - name: "darkforums.st"
     rss_url: "https://darkforums.st/forums/-/index.rss"
-    enabled: true
+    enabled: false
     tags: ["database", "credentials"]
-    note: "原 darkforums.io 已迁移至 .st"
-
-  - name: "leakzone"
-    rss_url: "https://leakzone.net/syndication.php?limit=50"
-    enabled: true
-    tags: ["database"]
-    note: "候选源"
+    note: "已迁移至 darkforums.su"

@@ -30,22 +30,21 @@ type Config struct {
 
 // SourcesConfig controls how RSS feed source lists are loaded.
 type SourcesConfig struct {
-	// RemoteURL is a URL (or GitHub shorthand "owner/repo/file.yaml") pointing
-	// to a remotely-hosted sources YAML. Fetched on every startup.
-	// Leave empty to use only local config + built-in seeds.
+	// RemoteURL 指向手动维护的补充源列表（优先级最高）
 	RemoteURL string `yaml:"remote_url"` // SOURCES_REMOTE_URL
 
-	// LocalOverridesRemote: when true, local data_sources entries win over
-	// the remote file for the same source name. Default false (remote wins).
+	// LocalOverridesRemote 本地 data_sources 是否覆盖远程同名源
 	LocalOverridesRemote bool `yaml:"local_overrides_remote"` // SOURCES_LOCAL_OVERRIDES
 
-	// HealthCheck probes every enabled source with a HEAD request before
-	// starting the poll cycle, automatically skipping unreachable feeds.
+	// HealthCheck 启动时对所有源 HEAD 探活，自动剔除死链
 	HealthCheck bool `yaml:"health_check"` // SOURCES_HEALTH_CHECK
 
-	// DisableBuiltinSeeds prevents the hardcoded fallback seed list from being
-	// used when no other source provides a given feed. Default false.
+	// DisableBuiltinSeeds 禁用内置兜底 seed
 	DisableBuiltinSeeds bool `yaml:"disable_builtin_seeds"` // SOURCES_NO_SEEDS
+
+	// DisableAutoDiscover 禁用从 deepdarkCTI 自动发现新源
+	// 默认 false（启用自动发现），设为 true 则只用手动配置的源
+	DisableAutoDiscover bool `yaml:"disable_auto_discover"` // SOURCES_NO_AUTODISCOVER
 }
 
 // LLMConfig holds all settings for the AI analysis layer.
@@ -368,6 +367,7 @@ func applyEnv(r *rawConfig) {
 	envBool("SOURCES_LOCAL_OVERRIDES", &r.Sources.LocalOverridesRemote)
 	envBool("SOURCES_HEALTH_CHECK", &r.Sources.HealthCheck)
 	envBool("SOURCES_NO_SEEDS", &r.Sources.DisableBuiltinSeeds)
+	envBool("SOURCES_NO_AUTODISCOVER", &r.Sources.DisableAutoDiscover)
 }
 
 // ---------------------------------------------------------------------------
