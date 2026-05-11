@@ -200,6 +200,8 @@ var (
 	rssPathList = []string{
 		"/forums/-/index.rss",
 		"/syndication.php?limit=50",
+		"/syndication.php?fid=127&limit=50", // BreachForums: Leaks & Databases subforum
+		"/syndication.php?fid=4&limit=50",   // common "Leaks" subforum fid
 		"/external.php?type=RSS2",
 		"/rss/1-temy.xml/",
 		"/feed/",
@@ -494,18 +496,17 @@ func (l *Loader) discoverCyberSecOPML(ctx context.Context) []config.DataSource {
 
 func (l *Loader) discoverDirectFeeds(_ context.Context) []config.DataSource {
 	return []config.DataSource{
-		// Breach/leak news
+		// ── Real breach/leak trackers (data-bearing, not news) ──────────────
+		// HaveIBeenPwned: actual breach notifications (high signal)
 		{Name: "HaveIBeenPwned", RSSURL: "https://feeds.feedburner.com/HaveIBeenPwnedLatestBreaches", Enabled: true},
-		{Name: "BleepingComputer", RSSURL: "https://www.bleepingcomputer.com/feed/", Enabled: true},
+		// DDoSecrets: document/database leak collective
 		{Name: "DDoSecrets", RSSURL: "https://ddosecrets.substack.com/feed", Enabled: true},
-		{Name: "TroyHunt", RSSURL: "https://www.troyhunt.com/rss/", Enabled: true},
-		{Name: "KrebsOnSecurity", RSSURL: "https://krebsonsecurity.com/feed/", Enabled: true},
-		// Exploit/vulnerability
-		{Name: "ExploitDB", RSSURL: "https://www.exploit-db.com/rss.xml", Enabled: true},
-		{Name: "0day.today", RSSURL: "https://0day.today/rss/", Enabled: true},
-		{Name: "VulnDB", RSSURL: "https://vuldb.com/?rss.recent", Enabled: true},
-		// Ransomware tracking
-		{Name: "RansomNews", RSSURL: "https://ransomfeed.it/rss.php", Enabled: true},
+		// ransomfeed.it: ransomware victim tracker with actual data claims
+		{Name: "RansomFeed", RSSURL: "https://ransomfeed.it/rss.php", Enabled: true},
+
+		// ── Removed news blogs (no actual data, pure reporting noise) ───────
+		// BleepingComputer, KrebsOnSecurity, TroyHunt, ExploitDB, 0day.today,
+		// VulnDB — these are commentary/news, not data-bearing leak posts.
 	}
 }
 
@@ -703,6 +704,11 @@ const (
 // ---------------------------------------------------------------------------
 
 var builtinSeeds = []config.DataSource{
+	// BreachForums — try all known active domains (frequently rotated)
+	{Name: "breachforums", RSSURL: "https://breachforums.st/syndication.php?limit=50", Enabled: true},
+	{Name: "breachforums-rs", RSSURL: "https://breachforums.rs/syndication.php?limit=50", Enabled: true},
+	{Name: "breachforums-cx", RSSURL: "https://breachforums.cx/syndication.php?limit=50", Enabled: true},
+	// Other high-value leak forums
 	{Name: "leakbase", RSSURL: "https://leakbase.la/forums/-/index.rss", Enabled: true},
 	{Name: "hard-tm", RSSURL: "https://hard-tm.su/forums/-/index.rss", Enabled: true},
 	{Name: "mipped", RSSURL: "https://mipped.com/f/forums/-/index.rss", Enabled: true},

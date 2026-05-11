@@ -98,8 +98,15 @@ func (f *Fetcher) Fetch(ctx context.Context, ds config.DataSource) ([]storage.It
 		content := extractContent(entry)
 		dlLinks := extractDownloadLinks(content)
 
+		// Prefix title with [SiteName] for instant source identification in reports/notifications.
+		// Skip if title already starts with "[" (e.g., ransomware sentinel items already prefixed).
+		prefixedTitle := title
+		if !strings.HasPrefix(title, "[") {
+			prefixedTitle = "[" + ds.Name + "] " + title
+		}
+
 		items = append(items, storage.Item{
-			Title:         title,
+			Title:         prefixedTitle,
 			Link:          link,
 			PubDate:       pubDate,
 			Author:        author,
