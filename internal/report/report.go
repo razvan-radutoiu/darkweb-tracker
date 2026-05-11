@@ -97,6 +97,53 @@ func (g *Generator) Daily(ctx context.Context) (*DailyResult, error) {
 }
 
 // ---------------------------------------------------------------------------
+// AllTime report — 全量历史数据，生成 index.html
+// ---------------------------------------------------------------------------
+
+// AllTimeResult holds metadata for the all-time report.
+type AllTimeResult struct {
+	HTMLFile   string
+	TotalCount int
+}
+
+// AllTime generates an HTML report covering ALL items in the database.
+// This is used as the main index.html so every hourly run reflects the full history.
+func (g *Generator) AllTime(ctx context.Context) (*AllTimeResult, error) {
+	items, err := g.db.List(ctx, storage.QueryOptions{
+		OrderDesc: true, // newest first
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query all items: %w", err)
+	}
+
+	bySource, err := g.db.CountBySourceAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(g.archiveDir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir archive: %w", err)
+	}
+
+	htmlFile := filepath.Join(filepath.Dir(g.archiveDir), "index.html")
+	if err := g.renderHTML(htmlFile, reportData{
+		Title:      "DarkWeb 数据泄露监控总览",
+		Date:       "全量历史",
+		UpdateTime: time.Now().Format(time.DateTime),
+		Items:      items,
+		BySource:   bySource,
+		TotalCount: len(items),
+	}); err != nil {
+		return nil, fmt.Errorf("render all-time html: %w", err)
+	}
+
+	return &AllTimeResult{
+		HTMLFile:   htmlFile,
+		TotalCount: len(items),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
 // Weekly report
 // ---------------------------------------------------------------------------
 
@@ -616,7 +663,12 @@ function doSort() {
   });
   
   const tbody = document.querySelector('#main-table tbody');
-  visibleRows.forEach(r => tbody.appendChild(r));
+  visibleRows.forEach((r, i) => {
+    tbody.appendChild(r);
+    // 更新序号列，避免排序后序号和行内容错位
+    const numCell = r.querySelector('td.num');
+    if (numCell) numCell.textContent = i + 1;
+  });
   
   currentPage = 1;
   paginate();

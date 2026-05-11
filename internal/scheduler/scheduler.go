@@ -368,6 +368,14 @@ func (s *Scheduler) generateDaily(ctx context.Context) {
 		s.log.Error("daily rss failed", "err", err)
 	}
 
+	// 每次运行后刷新全量 index.html（覆盖 workflow 的旧版跳转页）
+	allResult, err := s.generator.AllTime(ctx)
+	if err != nil {
+		s.log.Error("all-time index.html failed", "err", err)
+	} else {
+		s.log.Info("all-time index.html updated", "file", allResult.HTMLFile, "total", allResult.TotalCount)
+	}
+
 	body := fmt.Sprintf("共收集到 %d 条数据泄露相关信息", result.TotalCount)
 	if s.analyzer != nil {
 		body += s.buildTopNSummary(ctx)

@@ -189,3 +189,25 @@ func (d *DB) TotalCount(ctx context.Context, since, until time.Time) (int, error
 	).Scan(&n)
 	return n, err
 }
+
+// CountBySourceAll returns (siteName → count) for ALL items (no time filter).
+func (d *DB) CountBySourceAll(ctx context.Context) (map[string]int, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT site_name, COUNT(*) FROM items
+		GROUP BY site_name ORDER BY COUNT(*) DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("count by source all: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var name string
+		var count int
+		if err := rows.Scan(&name, &count); err != nil {
+			return nil, err
+		}
+		result[name] = count
+	}
+	return result, rows.Err()
+}
