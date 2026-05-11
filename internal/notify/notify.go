@@ -30,6 +30,17 @@ type Message struct {
 	Link     string // optional primary link
 	SiteName string
 	Kind     Kind
+
+	// AI analysis fields — populated when AI is enabled and score >= notify_min_score.
+	// When set, channels render a richer format.
+	Score            int
+	Category         string
+	Summary          string
+	AffectedTargets  []string
+	DataTypes        []string
+	EstimatedRecords int
+	IsUrgent         bool
+	ConfidenceLevel  string
 }
 
 // Kind classifies the message for channels that treat them differently.
@@ -313,9 +324,16 @@ func (t *Telegram) Name() string { return "Telegram" }
 func (t *Telegram) Send(ctx context.Context, msg Message) error {
 	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", t.token)
 
-	text := fmt.Sprintf("*%s*\n%s", escapeMarkdownV2(msg.Title), escapeMarkdownV2(msg.Body))
-	if msg.Link != "" {
-		text += fmt.Sprintf("\n[链接](%s)", msg.Link)
+	var text string
+	if msg.Score > 0 {
+		// 富文本格式：AI 分析结果
+		text = buildTelegramRichText(msg)
+	} else {
+		// 降级：纯文本（无 AI 或日报/周报汇总）
+		text = fmt.Sprintf("*%s*\n%s", escapeMarkdownV2(msg.Title), escapeMarkdownV2(msg.Body))
+		if msg.Link != "" {
+			text += fmt.Sprintf("\n[链接](%s)", msg.Link)
+		}
 	}
 
 	payload := map[string]any{
@@ -325,6 +343,83 @@ func (t *Telegram) Send(ctx context.Context, msg Message) error {
 		"disable_web_page_preview": true,
 	}
 	return postJSON(ctx, t.client, endpoint, payload)
+}
+
+// scoreEmoji returns a colored emoji badge based on the score.
+func scoreEmoji(score int) string {
+	switch {
+	case score >= 9:
+		return "🔴"
+	case score >= 7:
+		return "🟠"
+	case score >= 5:
+		return "🟡"
+	default:
+		return "🔵"
+	}
+}
+
+// buildTelegramRichText builds a rich MarkdownV2 message for AI-analyzed items.
+func buildTelegramRichText(msg Message) string {
+	var b strings.Builder
+
+	// Header: score badge + urgency
+	urgentTag := ""
+	if msg.IsUrgent {
+		urgentTag = " ⚠️ *URGENT*"
+	}
+	b.WriteString(fmt.Sprintf("%s *\\[%d/10\\]* `%s`%s\n",
+		scoreEmoji(msg.Score),
+		msg.Score,
+		escapeMarkdownV2(msg.Category),
+		urgentTag,
+	))
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━\n")
+
+	// Title
+	b.WriteString(fmt.Sprintf("📄 *%s*\n", escapeMarkdownV2(msg.Title)))
+
+	// Source
+	b.WriteString(fmt.Sprintf("📌 来源: `%s`\n", escapeMarkdownV2(msg.SiteName)))
+
+	// Affected targets
+	if len(msg.AffectedTargets) > 0 {
+		b.WriteString(fmt.Sprintf("🎯 目标: %s\n", escapeMarkdownV2(strings.Join(msg.AffectedTargets, ", "))))
+	}
+
+	// Data types
+	if len(msg.DataTypes) > 0 {
+		b.WriteString(fmt.Sprintf("📦 类型: %s\n", escapeMarkdownV2(strings.Join(msg.DataTypes, " · "))))
+	}
+
+	// Estimated records
+	if msg.EstimatedRecords > 0 {
+		b.WriteString(fmt.Sprintf("📊 规模: ~%s 条\n", escapeMarkdownV2(formatCount(msg.EstimatedRecords))))
+	}
+
+	// AI summary
+	if msg.Summary != "" {
+		b.WriteString(fmt.Sprintf("🤖 %s\n", escapeMarkdownV2(msg.Summary)))
+	}
+
+	// Link
+	if msg.Link != "" {
+		b.WriteString(fmt.Sprintf("🔗 [查看原文](%s)", msg.Link))
+	}
+
+	return b.String()
+}
+
+// formatCount formats large numbers with K/M suffixes.
+func formatCount(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	default:
+		return strconv.Itoa(n)
+	}
 }
 
 // escapeMarkdownV2 escapes characters reserved in Telegram MarkdownV2.
