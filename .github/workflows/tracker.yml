@@ -1,12 +1,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # DarkWeb Forums Tracker — 主工作流
 #
-# 触发：每天北京时间 10:00 自动运行 + 手动触发
+# 触发：每小时整点自动运行 + 手动触发
 # 功能：
 #   1. 抓取所有 RSS 源（远程 sources.yaml 优先）
 #   2. AI 分析（使用 GitHub Models 内置 API，无需额外付费）
 #   3. 生成日报 / 周报 HTML
-#   4. 提交结果回 main 分支
+#   4. 提交结果回 main 分支（仅在有新数据时提交，避免空提交）
 #   5. 部署 HTML 报告到 GitHub Pages
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -14,9 +14,8 @@ name: DarkWeb Forums Tracker
 
 on:
   schedule:
-    # 北京时间每天 10:00（GitHub Actions 2026 支持 timezone 参数）
-    - cron: '0 10 * * *'
-      timezone: 'Asia/Shanghai'
+    # 每小时整点运行（UTC），即北京时间每小时 :00
+    - cron: '0 * * * *'
 
   workflow_dispatch:
     inputs:
@@ -34,6 +33,7 @@ on:
         default: true
 
 # 同一时间只允许一个实例运行，避免数据库冲突
+# cancel-in-progress: false 确保上一次跑完才允许下一次开始
 concurrency:
   group: darkweb-tracker
   cancel-in-progress: false   # 不取消正在运行的，等待完成
@@ -49,7 +49,8 @@ jobs:
   track:
     name: 抓取 & 分析
     runs-on: ubuntu-latest
-    timeout-minutes: 55   # 留 5 分钟给后续 Pages 部署
+    # 每次运行必须在 25 分钟内完成，确保不超过 1 小时调度周期
+    timeout-minutes: 25
 
     outputs:
       has_changes: ${{ steps.commit.outputs.changes_detected }}
@@ -63,12 +64,9 @@ jobs:
         with:
           # 必须 fetch 完整历史，否则 git push 可能冲突
           fetch-depth: 0
-          # 使用 PAT 时设置 token（默认 GITHUB_TOKEN 也可提交）
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 2. 从缓存恢复 SQLite 数据库（跨 workflow 持久化）──────────────────
-      # 注意：GitHub Cache 不适合大文件，推荐把 db 提交到仓库
-      # 这里只是示范如何处理上次运行的残留数据
+      # ── 2. 拉取最新数据（含上次运行写入的 db 和报告）─────────────────────
       - name: 拉取最新数据（含上次运行的 db）
         run: |
           git pull --rebase origin main || echo "::warning::拉取失败，继续使用本地版本"
@@ -122,13 +120,12 @@ jobs:
           # ── 手动触发时支持跳过 AI 分析 ──────────────────────────────────
           LLM_ENABLED: ${{ inputs.skip_ai == true && 'false' || '' }}
           # 注：LLM_ENABLED 留空时，以 config.yaml 中的 llm.enabled 为准
-          # 所有其他 LLM 参数（model/rpm/workers 等）从 config.yaml 读取
 
         run: |
-          # 记录报告日期，供后续步骤引用
+          # 记录报告日期和时间戳，供提交信息使用
           echo "report_date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "report_time=$(date +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_OUTPUT
 
-          # 构建运行参数
           ARGS="--once --config config.yaml --db data_leaks.db"
           if [ "${{ inputs.debug }}" = "true" ]; then
             ARGS="$ARGS --debug"
@@ -138,16 +135,18 @@ jobs:
           ./tracker $ARGS
           echo "::endgroup::"
 
-      # ── 6. 提交结果回仓库 ──────────────────────────────────────────────────
+      # ── 6. 提交结果回仓库（仅在有实际变更时提交）──────────────────────────
+      # skip_dirty_check: false 保证工作区无变更时不产生空提交
+      # 每次提交带时间戳，区分同一天内的多次运行
       - name: Commit 结果
         id: commit
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: |
-            auto: 每日扫描更新 ${{ steps.run.outputs.report_date }} [skip ci]
+            auto: 扫描更新 ${{ steps.run.outputs.report_time }} [skip ci]
 
-            - 抓取 DarkWeb 论坛 RSS
-            - AI 分析评分（GitHub Models / gpt-4o-mini）
+            - 抓取 DarkWeb 论坛 RSS（SQLite 按链接去重，不写入重复条目）
+            - 规则引擎评分 / AI 分析
             - 生成日报 HTML
           file_pattern: |
             data_leaks.db
@@ -157,6 +156,7 @@ jobs:
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"
           commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          # false = 工作区无变更时跳过提交（避免空提交）
           skip_dirty_check: false
 
       # ── 7. 检查是否有报告可部署 ────────────────────────────────────────────
