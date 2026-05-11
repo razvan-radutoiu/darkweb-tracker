@@ -147,6 +147,7 @@ func (l *Loader) autoDiscoverAll(ctx context.Context) []config.DataSource {
 	}{
 		{"deepdarkCTI/forum.md", l.discoverDeepDarkCTIForums},
 		{"deepdarkCTI/ransomware_gang.md", l.discoverDeepDarkCTIRansomware},
+		{"deepdarkCTI/markets.md", l.discoverDeepDarkCTIMarkets},
 		{"adminlove520/rss_dataleak.yaml", l.discoverAdminloveYAML},
 		{"ransomware.live API", l.discoverRansomwareLive},
 		{"ransomwatch/posts.json", l.discoverRansomwatch},
@@ -292,7 +293,40 @@ func (l *Loader) discoverDeepDarkCTIRansomware(ctx context.Context) []config.Dat
 }
 
 // ---------------------------------------------------------------------------
-// 3. adminlove520/DarkWeb-Forums-Tracker — rss_dataleak.yaml (pre-validated!)
+// 3. fastfire/deepdarkCTI — markets.md (clearnet dark markets → probe RSS)
+// ---------------------------------------------------------------------------
+
+const deepdarkCTIMarketsURL = "https://raw.githubusercontent.com/fastfire/deepdarkCTI/main/markets.md"
+
+// reMarketOnline matches: [Name](https://clearnet-url)| ONLINE
+var reMarketOnline = regexp.MustCompile(`\[([^\]]+)\]\((https://[^)]+)\)[^|]*\|\s*ONLINE`)
+
+func (l *Loader) discoverDeepDarkCTIMarkets(ctx context.Context) []config.DataSource {
+	body := l.fetchText(ctx, deepdarkCTIMarketsURL, 2*1024*1024)
+	if body == "" {
+		return nil
+	}
+
+	var candidates []forumCandidate
+	seen := make(map[string]bool)
+
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	for scanner.Scan() {
+		for _, m := range reMarketOnline.FindAllStringSubmatch(scanner.Text(), -1) {
+			base := strings.TrimRight(m[2], "/")
+			if reOnion.MatchString(base) || seen[base] {
+				continue
+			}
+			seen[base] = true
+			candidates = append(candidates, forumCandidate{sanitizeName(m[1]), base})
+		}
+	}
+
+	return l.probeRSSBatch(ctx, candidates)
+}
+
+// ---------------------------------------------------------------------------
+// 4. adminlove520/DarkWeb-Forums-Tracker — rss_dataleak.yaml (pre-validated!)
 // ---------------------------------------------------------------------------
 
 const adminloveYAMLURL = "https://raw.githubusercontent.com/adminlove520/DarkWeb-Forums-Tracker/main/rss_dataleak.yaml"
