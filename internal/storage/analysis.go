@@ -183,9 +183,10 @@ func (d *DB) GetAnalysis(ctx context.Context, itemID int64) (*AnalysisRow, error
 	return &r, nil
 }
 
-// TopScoredToday returns the highest-scored items analysed today, limited to
-// the requested count. Only items with analysis results are included.
+// TopScoredToday returns the highest-scored items analysed today (Beijing time),
+// limited to the requested count. Only items with analysis results are included.
 func (d *DB) TopScoredToday(ctx context.Context, limit int) ([]ItemWithAnalysis, error) {
+	// SQLite date('now') is UTC; add 8 hours to align with Beijing calendar day.
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT i.id, i.title, i.link, i.pub_date, i.author, i.category,
 		       i.content, i.download_links, i.site_name, i.created_at,
@@ -195,7 +196,7 @@ func (d *DB) TopScoredToday(ctx context.Context, limit int) ([]ItemWithAnalysis,
 		       a.analyzed_at
 		FROM items i
 		INNER JOIN analysis_results a ON a.item_id = i.id
-		WHERE date(i.created_at) = date('now')
+		WHERE date(i.created_at, '+8 hours') = date('now', '+8 hours')
 		ORDER BY a.score DESC
 		LIMIT ?`, limit)
 	if err != nil {
@@ -265,7 +266,7 @@ func (d *DB) ExportForTraining(ctx context.Context, since, until time.Time) ([]T
 		INNER JOIN analysis_results a ON a.item_id = i.id
 		WHERE i.created_at BETWEEN ? AND ?
 		ORDER BY a.score DESC`,
-		since.Format(time.DateTime), until.Format(time.DateTime),
+		since.UTC().Format(time.DateTime), until.UTC().Format(time.DateTime),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("export for training: %w", err)

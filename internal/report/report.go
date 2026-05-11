@@ -45,10 +45,13 @@ type DailyResult struct {
 }
 
 func (g *Generator) Daily(ctx context.Context) (*DailyResult, error) {
-	today := time.Now()
+	// Use Beijing time (UTC+8) for "today" so reports align with user's calendar.
+	// List/TotalCount convert to UTC internally for SQLite comparison.
+	cst := time.FixedZone("CST", 8*3600)
+	today := time.Now().UTC().Add(8 * time.Hour)
 	dateStr := today.Format(time.DateOnly)
 
-	dayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location())
+	dayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, cst)
 	dayEnd := dayStart.Add(24 * time.Hour)
 
 	items, err := g.db.List(ctx, storage.QueryOptions{

@@ -114,13 +114,15 @@ func (d *DB) List(ctx context.Context, opts QueryOptions) ([]Item, error) {
 		q += " AND site_name = ?"
 		args = append(args, opts.SiteName)
 	}
+	// SQLite CURRENT_TIMESTAMP stores UTC; always compare in UTC to avoid
+	// timezone-shifted results (e.g. CST "today" start ≠ UTC "today" start).
 	if !opts.Since.IsZero() {
 		q += " AND created_at >= ?"
-		args = append(args, opts.Since.Format(time.DateTime))
+		args = append(args, opts.Since.UTC().Format(time.DateTime))
 	}
 	if !opts.Until.IsZero() {
 		q += " AND created_at <= ?"
-		args = append(args, opts.Until.Format(time.DateTime))
+		args = append(args, opts.Until.UTC().Format(time.DateTime))
 	}
 
 	if opts.OrderDesc {
@@ -161,7 +163,7 @@ func (d *DB) CountBySource(ctx context.Context, since, until time.Time) (map[str
 		SELECT site_name, COUNT(*) FROM items
 		WHERE created_at >= ? AND created_at <= ?
 		GROUP BY site_name ORDER BY COUNT(*) DESC`,
-		since.Format(time.DateTime), until.Format(time.DateTime),
+		since.UTC().Format(time.DateTime), until.UTC().Format(time.DateTime),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("count by source: %w", err)
@@ -185,7 +187,7 @@ func (d *DB) TotalCount(ctx context.Context, since, until time.Time) (int, error
 	var n int
 	err := d.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM items WHERE created_at >= ? AND created_at <= ?`,
-		since.Format(time.DateTime), until.Format(time.DateTime),
+		since.UTC().Format(time.DateTime), until.UTC().Format(time.DateTime),
 	).Scan(&n)
 	return n, err
 }
