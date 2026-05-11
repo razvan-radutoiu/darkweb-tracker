@@ -400,157 +400,262 @@ const htmlTmpl = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ .Title }}</title>
 <style>
-:root{--bg:#0a0e17;--fg:#00ff41;--fg2:#00e0ff;--card:#121721;--border:#2d3748;--hover:rgba(0,255,65,.06);--text-muted:#8b949e;--transition:all 0.3s ease}
+/* ── RESET & BASE ─────────────────────────────────────────────────────────── */
+:root{
+  --bg:#050709;--bg2:#0b0f17;--bg3:#111722;
+  --fg:#39ff14;--fg-dim:#1a8c00;--fg2:#00d4ff;--fg2-dim:#006680;
+  --red:#ff2222;--orange:#ff6600;--yellow:#ffd700;--purple:#cc00ff;
+  --border:#1a2535;--border-bright:#2a3f5a;
+  --muted:#3d5066;--muted2:#566880;
+  --row-even:#080c12;--row-odd:#0b1018;--row-hover:#0f1e2e;
+  --font:'Courier New',Courier,'Lucida Console',monospace;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Courier New',monospace;background:var(--bg);color:var(--fg2);max-width:1400px;margin:0 auto;padding:0 24px 24px;min-height:100vh;line-height:1.6}
-/* Navbar */
-nav{position:sticky;top:0;background:rgba(10,14,23,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);padding:16px 0;margin-bottom:24px;z-index:100;display:flex;justify-content:space-between;align-items:center}
-.nav-brand{color:var(--fg);font-weight:700;font-size:1.1rem;text-shadow:0 0 5px rgba(0,255,65,.5)}
-.nav-links{display:flex;gap:20px}
-.nav-links a{color:var(--fg2);text-decoration:none;font-size:.9rem;text-transform:uppercase;letter-spacing:.05em;transition:var(--transition)}
-.nav-links a:hover{color:var(--fg);text-shadow:0 0 8px rgba(0,255,65,.5)}
-/* Header */
-header{border:1px solid var(--fg);padding:30px;text-align:center;margin-bottom:32px;box-shadow:0 0 20px rgba(0,255,65,.15),inset 0 0 20px rgba(0,255,65,.05);background:linear-gradient(180deg,rgba(18,23,33,.8) 0%,rgba(10,14,23,.9) 100%);border-radius:8px}
-h1{color:var(--fg);text-shadow:0 0 10px rgba(0,255,65,.4);font-size:2.2rem;margin-bottom:10px;letter-spacing:.05em}
-.subtitle{color:var(--text-muted);font-size:.95rem}
-/* Section Titles */
-h2{color:var(--fg);font-size:1.4rem;margin-bottom:16px;padding-bottom:8px;border-bottom:1px dashed var(--border);display:flex;align-items:center;gap:10px}
-h2::before{content:'>';color:var(--fg2)}
-/* Stats */
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:40px}
-.stat-card{background:var(--card);border:1px solid var(--border);padding:20px;border-radius:8px;transition:var(--transition);position:relative;overflow:hidden}
-.stat-card::before{content:'';position:absolute;top:0;left:0;width:4px;height:100%;background:var(--fg);opacity:.5}
-.stat-card:hover{border-color:var(--fg);box-shadow:0 4px 12px rgba(0,255,65,.1);transform:translateY(-2px)}
-.stat-label{font-size:.8rem;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
-.stat-value{font-size:1.8rem;color:var(--fg);font-weight:700;text-shadow:0 0 8px rgba(0,255,65,.3)}
-/* Chart */
-.chart-container{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;margin-bottom:40px}
-.bar-row{display:flex;align-items:center;margin-bottom:12px;gap:16px}
-.bar-label{width:120px;text-align:right;font-size:.85rem;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bar-track{flex:1;height:24px;background:rgba(255,255,255,.05);border-radius:4px;overflow:hidden;position:relative}
-.bar-fill{height:100%;background:linear-gradient(90deg,rgba(0,224,255,.6) 0%,rgba(0,255,65,.8) 100%);width:0%;transition:width 1s cubic-bezier(.4,0,.2,1);display:flex;align-items:center;justify-content:flex-end;padding-right:8px;box-shadow:inset -2px 0 5px rgba(0,0,0,.2)}
-.bar-value{font-size:.75rem;color:#fff;font-weight:700;text-shadow:1px 1px 2px rgba(0,0,0,.8)}
-/* Toolbar */
-.toolbar{display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap;align-items:center;background:var(--card);padding:16px;border-radius:8px;border:1px solid var(--border)}
-.toolbar input,.toolbar select{background:var(--bg);border:1px solid var(--border);color:var(--fg2);padding:10px 16px;font-family:inherit;font-size:.9rem;border-radius:4px;outline:none;flex:1;min-width:200px;transition:var(--transition)}
-.toolbar input:focus,.toolbar select:focus{border-color:var(--fg);box-shadow:0 0 8px rgba(0,255,65,.2)}
-.toolbar select option{background:var(--bg)}
-.count-badge{color:var(--fg);font-size:.85rem;white-space:nowrap;font-weight:700}
-/* Table */
-.table-wrap{overflow-x:auto;background:var(--card);border-radius:8px;border:1px solid var(--border);margin-bottom:24px}
-table{width:100%;border-collapse:collapse;font-size:.9rem}
-th{background:rgba(10,14,23,.8);color:var(--fg);padding:14px 16px;border-bottom:2px solid var(--border);text-align:left;white-space:nowrap;cursor:pointer;user-select:none;transition:var(--transition);position:sticky;top:60px;z-index:1}
-th:hover{background:rgba(0,255,65,.1)}
-th.sort-asc::after{content:' ▲';font-size:.7rem}
-th.sort-desc::after{content:' ▼';font-size:.7rem}
-td{padding:14px 16px;border-bottom:1px solid var(--border);vertical-align:top}
-td.num{color:var(--text-muted);text-align:right;width:50px}
-td.src{white-space:nowrap}
-td.time{white-space:nowrap;color:var(--text-muted);font-size:.85rem}
-td a{color:var(--fg2);text-decoration:none;font-weight:700;transition:var(--transition);word-break:break-all}
-td a:hover{color:var(--fg);text-shadow:0 0 5px rgba(0,255,65,.4);text-decoration:underline}
-/* Expandable Rows */
-tr.data-row{cursor:pointer;transition:var(--transition)}
-tr.data-row:hover td{background:var(--hover)}
-tr.hidden{display:none !important}
-.content-preview{font-size:.8rem;color:var(--text-muted);margin-top:6px;display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:600px}
-.content-full{max-height:0;overflow:hidden;transition:max-height .4s cubic-bezier(0,1,0,1);background:rgba(0,0,0,.2);border-radius:4px;margin-top:0;padding:0 12px;font-size:.85rem;color:#a0aec0;white-space:pre-wrap;word-break:break-all}
-tr.expanded .content-full{max-height:2000px;padding:12px;margin-top:10px;border-left:2px solid var(--fg2);transition:max-height .5s ease-in-out}
-tr.expanded .content-preview{display:none}
-/* Site tier badges */
-.badge{display:inline-block;padding:4px 8px;border-radius:4px;font-size:.75rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
-.t1{background:rgba(255,68,68,.1);color:#ff6b6b;border:1px solid #ff4444}
-.t2{background:rgba(255,140,0,.1);color:#ffa500;border:1px solid #ff8c00}
-.t3{background:rgba(68,170,68,.1);color:#66cc66;border:1px solid #44aa44}
-.t4{background:rgba(74,110,216,.1);color:#7b9ef5;border:1px solid #4a6ed8}
-.t-ransom{background:rgba(153,50,204,.1);color:#da70d6;border:1px solid #9932cc}
-.t-intel{background:rgba(32,178,170,.1);color:#40e0d0;border:1px solid #20b2aa}
-/* Pagination */
-.pagination{display:flex;gap:8px;justify-content:center;align-items:center;margin:24px 0;flex-wrap:wrap}
-.pagination button{background:var(--card);border:1px solid var(--border);color:var(--fg2);padding:8px 16px;font-family:inherit;font-size:.9rem;cursor:pointer;border-radius:4px;transition:var(--transition)}
-.pagination button:hover:not(:disabled){border-color:var(--fg);color:var(--fg);box-shadow:0 0 8px rgba(0,255,65,.2)}
-.pagination button.active{background:var(--fg);color:var(--bg);border-color:var(--fg);font-weight:700}
-.pagination button:disabled{opacity:.4;cursor:not-allowed}
-.page-info{color:var(--text-muted);font-size:.85rem;text-align:center;margin-top:12px}
-/* Footer */
-footer{margin-top:60px;text-align:center;color:var(--text-muted);font-size:.85rem;border-top:1px solid var(--border);padding-top:24px;padding-bottom:24px}
+html{scroll-behavior:smooth}
+body{font-family:var(--font);background:var(--bg);color:var(--fg2);min-height:100vh;font-size:13px;line-height:1.5;overflow-x:hidden}
+
+/* ── SCANLINE OVERLAY ─────────────────────────────────────────────────────── */
+body::before{
+  content:'';position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9999;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.08) 2px,rgba(0,0,0,.08) 4px);
+}
+
+/* ── NAVBAR ───────────────────────────────────────────────────────────────── */
+nav{
+  position:sticky;top:0;z-index:200;
+  background:rgba(5,7,9,.97);border-bottom:1px solid var(--fg-dim);
+  padding:0 24px;display:flex;align-items:center;gap:0;height:38px;
+  font-size:11px;letter-spacing:.08em;
+}
+.nav-logo{color:var(--fg);font-weight:700;font-size:12px;margin-right:24px;text-shadow:0 0 8px var(--fg);white-space:nowrap}
+.nav-logo span{color:var(--red);animation:blink 1.2s step-end infinite}
+.nav-tab{color:var(--muted2);text-decoration:none;padding:0 14px;height:38px;display:flex;align-items:center;border-right:1px solid var(--border);transition:color .15s,background .15s}
+.nav-tab:first-of-type{border-left:1px solid var(--border)}
+.nav-tab:hover{color:var(--fg);background:rgba(57,255,20,.06)}
+.nav-sep{flex:1}
+.nav-meta{color:var(--muted);font-size:10px;white-space:nowrap}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+/* ── HERO BANNER ──────────────────────────────────────────────────────────── */
+.hero{
+  border-bottom:1px solid var(--fg-dim);
+  padding:20px 24px 16px;
+  background:linear-gradient(180deg,rgba(57,255,20,.04) 0%,transparent 100%);
+  position:relative;overflow:hidden;
+}
+.hero::after{
+  content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--fg),transparent);
+  animation:scanh 3s linear infinite;
+}
+@keyframes scanh{0%{opacity:0}50%{opacity:1}100%{opacity:0}}
+.hero-pre{color:var(--muted2);font-size:10px;margin-bottom:4px;letter-spacing:.1em}
+.hero-title{color:var(--fg);font-size:20px;font-weight:700;text-shadow:0 0 12px rgba(57,255,20,.5);letter-spacing:.03em;margin-bottom:6px}
+.hero-sub{color:var(--muted2);font-size:11px}
+.hero-sub b{color:var(--fg2)}
+
+/* ── STATS BAR ────────────────────────────────────────────────────────────── */
+.stats-bar{
+  display:flex;flex-wrap:wrap;gap:0;border-bottom:1px solid var(--border);
+  background:var(--bg2);
+}
+.stat-box{
+  flex:1;min-width:140px;padding:12px 20px;border-right:1px solid var(--border);
+  position:relative;
+}
+.stat-box:last-child{border-right:none}
+.stat-box-label{font-size:9px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px}
+.stat-box-val{font-size:22px;font-weight:700;color:var(--fg);text-shadow:0 0 6px rgba(57,255,20,.4);line-height:1}
+.stat-box-sub{font-size:10px;color:var(--muted2);margin-top:3px}
+
+/* ── CHART SECTION ────────────────────────────────────────────────────────── */
+.section{padding:16px 24px;border-bottom:1px solid var(--border)}
+.section-head{
+  font-size:10px;color:var(--muted);letter-spacing:.15em;text-transform:uppercase;
+  margin-bottom:12px;display:flex;align-items:center;gap:8px
+}
+.section-head::before{content:'//';color:var(--fg-dim)}
+.bar-grid{display:flex;flex-direction:column;gap:6px}
+.bar-row{display:flex;align-items:center;gap:10px;font-size:11px}
+.bar-label{width:130px;text-align:right;color:var(--muted2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0}
+.bar-track{flex:1;height:14px;background:rgba(255,255,255,.03);border:1px solid var(--border);position:relative;overflow:hidden}
+.bar-fill{
+  height:100%;width:0%;
+  background:repeating-linear-gradient(90deg,var(--fg-dim) 0px,var(--fg-dim) 4px,transparent 4px,transparent 8px);
+  transition:width 1.2s cubic-bezier(.4,0,.2,1);position:relative;
+}
+.bar-fill::after{content:'';position:absolute;right:0;top:0;bottom:0;width:2px;background:var(--fg);box-shadow:0 0 6px var(--fg)}
+.bar-cnt{width:40px;color:var(--fg);font-size:10px;text-align:right;flex-shrink:0}
+
+/* ── TOOLBAR ──────────────────────────────────────────────────────────────── */
+.toolbar{
+  display:flex;flex-wrap:wrap;gap:8px;padding:10px 24px;
+  background:var(--bg2);border-bottom:1px solid var(--border);
+  align-items:center;position:sticky;top:38px;z-index:100;
+}
+.toolbar-input{
+  background:var(--bg);border:1px solid var(--border-bright);color:var(--fg2);
+  padding:6px 12px;font-family:var(--font);font-size:12px;
+  outline:none;flex:1;min-width:200px;
+}
+.toolbar-input::placeholder{color:var(--muted)}
+.toolbar-input:focus{border-color:var(--fg);box-shadow:0 0 0 1px var(--fg-dim)}
+.toolbar-select{
+  background:var(--bg);border:1px solid var(--border-bright);color:var(--fg2);
+  padding:6px 10px;font-family:var(--font);font-size:12px;
+  outline:none;cursor:pointer;
+}
+.toolbar-select option{background:var(--bg)}
+.toolbar-select:focus{border-color:var(--fg)}
+.toolbar-count{color:var(--fg);font-size:11px;letter-spacing:.05em;white-space:nowrap}
+
+/* ── TABLE ────────────────────────────────────────────────────────────────── */
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+thead th{
+  background:var(--bg3);color:var(--muted2);
+  padding:8px 14px;border-bottom:1px solid var(--fg-dim);
+  text-align:left;font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  white-space:nowrap;cursor:pointer;user-select:none;position:sticky;top:80px;z-index:50;
+}
+thead th:hover{color:var(--fg);background:rgba(57,255,20,.06)}
+thead th.sort-asc::after{content:' [ASC]';color:var(--fg);font-size:9px}
+thead th.sort-desc::after{content:' [DESC]';color:var(--fg);font-size:9px}
+tbody tr.data-row{cursor:pointer;border-bottom:1px solid var(--border)}
+tbody tr.data-row:nth-child(even){background:var(--row-even)}
+tbody tr.data-row:nth-child(odd){background:var(--row-odd)}
+tbody tr.data-row:hover td{background:var(--row-hover)}
+tbody tr.data-row.expanded td{background:var(--row-hover);border-bottom:1px solid var(--fg-dim)}
+tr.hidden{display:none!important}
+td{padding:9px 14px;vertical-align:top;font-size:12px}
+td.num{color:var(--muted);font-size:10px;width:44px;text-align:right;font-variant-numeric:tabular-nums}
+td.src{white-space:nowrap;width:1px}
+td.time{white-space:nowrap;color:var(--muted2);font-size:11px;width:1px}
+.row-title a{color:var(--fg2);text-decoration:none;font-weight:700;word-break:break-all;font-size:12px}
+.row-title a:hover{color:var(--fg);text-decoration:underline}
+.row-preview{display:block;font-size:10px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:700px}
+.row-expanded{
+  max-height:0;overflow:hidden;font-size:11px;color:var(--muted2);
+  white-space:pre-wrap;word-break:break-all;line-height:1.7;
+  border-left:2px solid var(--fg-dim);padding:0 10px;margin-top:0;
+  transition:max-height .35s ease,padding .35s ease,margin .35s ease;
+}
+tr.expanded .row-expanded{max-height:3000px;padding:10px;margin-top:8px}
+tr.expanded .row-preview{display:none}
+
+/* ── BADGES ───────────────────────────────────────────────────────────────── */
+.badge{display:inline-block;padding:2px 6px;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border:1px solid;font-family:var(--font)}
+.t1{color:var(--red);border-color:var(--red);background:rgba(255,34,34,.08)}
+.t2{color:var(--orange);border-color:var(--orange);background:rgba(255,102,0,.08)}
+.t3{color:#39ff14;border-color:#1a8c00;background:rgba(57,255,20,.06)}
+.t4{color:var(--fg2);border-color:var(--fg2-dim);background:rgba(0,212,255,.06)}
+.t-ransom{color:var(--purple);border-color:var(--purple);background:rgba(204,0,255,.08)}
+.t-intel{color:var(--yellow);border-color:#806800;background:rgba(255,215,0,.06)}
+
+/* ── SCROLL SENTINEL / LOADER ─────────────────────────────────────────────── */
+#scroll-sentinel{height:1px;margin-top:-1px}
+#load-more-status{
+  text-align:center;padding:16px;font-size:11px;color:var(--muted);
+  letter-spacing:.1em;
+}
+#load-more-status.loading::after{content:' [LOADING...]';animation:blink .6s step-end infinite}
+#load-more-status.done{color:var(--muted)}
+
+/* ── FOOTER ───────────────────────────────────────────────────────────────── */
+footer{padding:16px 24px;border-top:1px solid var(--border);color:var(--muted);font-size:10px;letter-spacing:.08em;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+footer a{color:var(--muted2);text-decoration:none}
+footer a:hover{color:var(--fg2)}
 </style>
 </head>
 <body>
 
+<!-- NAVBAR -->
 <nav>
-  <div class="nav-brand">DWT // SYSTEM</div>
-  <div class="nav-links">
-    <a href="#stats">统计</a>
-    <a href="#chart">图表</a>
-    <a href="#data">数据列表</a>
-  </div>
+  <span class="nav-logo">[ DWT<span>_</span> ]</span>
+  <a class="nav-tab" href="#stats">STATS</a>
+  <a class="nav-tab" href="#sources">SOURCES</a>
+  <a class="nav-tab" href="#feed">FEED</a>
+  <span class="nav-sep"></span>
+  <span class="nav-meta">{{ .UpdateTime }} UTC+8</span>
 </nav>
 
-<header>
-  <h1>{{ .Title }}</h1>
-  <p class="subtitle">最后更新：{{ .UpdateTime }}</p>
-</header>
+<!-- HERO -->
+<div class="hero">
+  <div class="hero-pre">// DARKWEB INTEL TRACKER — LIVE FEED</div>
+  <div class="hero-title">{{ .Title }}</div>
+  <div class="hero-sub">last sync: <b>{{ .UpdateTime }}</b> &nbsp;|&nbsp; status: <b style="color:var(--fg)">ONLINE</b></div>
+</div>
 
-<h2 id="stats">概览统计</h2>
-<div class="stats-grid">
-  <div class="stat-card">
-    <div class="stat-label">新增数量</div>
-    <div class="stat-value" id="total-count">{{ .TotalCount }}</div>
+<!-- STATS BAR -->
+<div class="stats-bar" id="stats">
+  <div class="stat-box">
+    <div class="stat-box-label">total records</div>
+    <div class="stat-box-val">{{ .TotalCount }}</div>
+    <div class="stat-box-sub">in database</div>
   </div>
-  <div class="stat-card">
-    <div class="stat-label">监控来源数量</div>
-    <div class="stat-value" id="source-count">0</div>
+  <div class="stat-box">
+    <div class="stat-box-label">sources</div>
+    <div class="stat-box-val" id="s-src-cnt">-</div>
+    <div class="stat-box-sub">active feeds</div>
   </div>
-  <div class="stat-card">
-    <div class="stat-label">最活跃来源</div>
-    <div class="stat-value" id="top-source" style="font-size:1.4rem;word-break:break-all;">-</div>
+  <div class="stat-box">
+    <div class="stat-box-label">top source</div>
+    <div class="stat-box-val" id="s-top-src" style="font-size:14px;padding-top:4px">-</div>
+    <div class="stat-box-sub" id="s-top-cnt">-</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-box-label">visible</div>
+    <div class="stat-box-val" id="s-visible">{{ .TotalCount }}</div>
+    <div class="stat-box-sub">after filter</div>
   </div>
 </div>
 
-<h2 id="chart">来源分布</h2>
-<div class="chart-container" id="source-chart">
-  {{ range $src, $cnt := .BySource }}
-  <div class="bar-row" data-src="{{ $src }}" data-cnt="{{ $cnt }}">
-    <div class="bar-label" title="{{ $src }}">{{ $src }}</div>
-    <div class="bar-track">
-      <div class="bar-fill"><span class="bar-value">{{ $cnt }}</span></div>
+<!-- SOURCE CHART -->
+<div class="section" id="sources">
+  <div class="section-head">source distribution</div>
+  <div class="bar-grid" id="source-chart">
+    {{ range $src, $cnt := .BySource }}
+    <div class="bar-row" data-src="{{ $src }}" data-cnt="{{ $cnt }}">
+      <div class="bar-label" title="{{ $src }}">{{ $src }}</div>
+      <div class="bar-track"><div class="bar-fill"></div></div>
+      <div class="bar-cnt">{{ $cnt }}</div>
     </div>
+    {{ end }}
   </div>
-  {{ end }}
 </div>
 
-<h2 id="data">数据列表</h2>
-<div class="toolbar">
-  <input type="text" id="search" placeholder="🔍 搜索标题/内容..." oninput="filterTable()">
-  <select id="src-filter" onchange="filterTable()">
-    <option value="">全部来源</option>
+<!-- TOOLBAR -->
+<div class="toolbar" id="feed">
+  <input class="toolbar-input" type="text" id="search" placeholder="> grep -i &quot;keyword&quot; feed.db" oninput="onFilter()">
+  <select class="toolbar-select" id="src-filter" onchange="onFilter()">
+    <option value="">-- all sources --</option>
     {{ range $src, $cnt := .BySource }}
     <option value="{{ $src }}">{{ $src }} ({{ $cnt }})</option>
     {{ end }}
   </select>
-  <span class="count-badge" id="filter-count"></span>
+  <span class="toolbar-count" id="filter-count"></span>
 </div>
 
+<!-- TABLE -->
 <div class="table-wrap">
 <table id="main-table">
 <thead>
   <tr>
-    <th>#</th>
-    <th onclick="sortTable(1, 'string')" title="点击排序">标题 / 内容摘要 ↕</th>
-    <th onclick="sortTable(2, 'string')" title="点击排序">来源 ↕</th>
-    <th onclick="sortTable(3, 'string')" title="点击排序">发现时间 ↕</th>
+    <th style="width:44px">#</th>
+    <th onclick="sortTable(1)" id="th-1">TITLE / CONTENT</th>
+    <th onclick="sortTable(2)" id="th-2">SOURCE</th>
+    <th onclick="sortTable(3)" id="th-3">TIMESTAMP</th>
   </tr>
 </thead>
-<tbody>
+<tbody id="feed-tbody">
 {{ range $i, $it := .Items }}
-<tr class="data-row" data-src="{{ $it.SiteName }}" data-title="{{ $it.Title }}" data-content="{{ $it.Content }}" data-time="{{ $it.CreatedAt.Format "2006-01-02 15:04:05" }}" onclick="this.classList.toggle('expanded')">
+<tr class="data-row" data-src="{{ $it.SiteName }}" data-title="{{ $it.Title }}" data-content="{{ $it.Content }}" data-time="{{ $it.CreatedAt.Format "2006-01-02 15:04:05" }}" onclick="toggleRow(this)">
   <td class="num">{{ inc $i }}</td>
-  <td class="title-cell">
+  <td class="row-title">
     <a href="{{ $it.Link }}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{ $it.Title }}</a>
     {{ if $it.Content }}
-    <span class="content-preview">{{ truncate64 $it.Content }}</span>
-    <div class="content-full" onclick="event.stopPropagation()">{{ $it.Content }}</div>
+    <span class="row-preview">{{ truncate64 $it.Content }}</span>
+    <div class="row-expanded" onclick="event.stopPropagation()">{{ $it.Content }}</div>
     {{ end }}
   </td>
   <td class="src"><span class="badge {{ siteTier $it.SiteName }}">{{ $it.SiteName }}</span></td>
@@ -561,173 +666,166 @@ footer{margin-top:60px;text-align:center;color:var(--text-muted);font-size:.85re
 </table>
 </div>
 
-<div class="pagination" id="pagination"></div>
-<p class="page-info" id="page-info"></p>
+<!-- INFINITE SCROLL SENTINEL -->
+<div id="scroll-sentinel"></div>
+<div id="load-more-status"></div>
 
-<footer><p>DarkWeb Forums Tracker · {{ .TotalCount }} 条记录 · {{ .Date }}</p></footer>
+<footer>
+  <span>DWT &copy; {{ .Date }} &nbsp;|&nbsp; {{ .TotalCount }} records indexed</span>
+  <span>// DO NOT DISTRIBUTE WITHOUT AUTHORIZATION</span>
+</footer>
 
 <script>
-const PAGE_SIZE = 100;
-let currentPage = 1;
-let visibleRows = [];
-let sortCol = -1;
-let sortAsc = true;
+// ── DATA ──────────────────────────────────────────────────────────────────
+const BATCH = 50;           // rows to reveal per scroll-load
+let allRows   = [];         // all tr.data-row in DOM order
+let visibleRows = [];       // rows matching current filter
+let renderedTo  = 0;        // how many of visibleRows are currently shown
+let sortCol  = -1;
+let sortAsc  = true;
 
-function initStatsAndChart() {
-  const rows = document.querySelectorAll('.bar-row');
-  let maxCnt = 0;
-  let topSrc = '-';
-  let topCnt = -1;
-  
-  document.getElementById('source-count').textContent = rows.length;
-  
-  rows.forEach(r => {
-    const cnt = parseInt(r.dataset.cnt, 10);
-    if (cnt > maxCnt) maxCnt = cnt;
-    if (cnt > topCnt) { topCnt = cnt; topSrc = r.dataset.src; }
+// ── INIT ──────────────────────────────────────────────────────────────────
+function init() {
+  allRows = Array.from(document.querySelectorAll('#main-table tbody tr.data-row'));
+
+  // hide all rows up front — infinite scroll will reveal them
+  allRows.forEach(r => { r.style.display = 'none'; });
+  visibleRows = allRows.slice();
+
+  initChart();
+  updateStats();
+  revealBatch();         // show first BATCH immediately
+  initScrollObserver();
+}
+
+// ── CHART ─────────────────────────────────────────────────────────────────
+function initChart() {
+  const bars = document.querySelectorAll('#source-chart .bar-row');
+  let max = 0, topSrc = '-', topCnt = 0;
+  bars.forEach(b => {
+    const c = parseInt(b.dataset.cnt, 10);
+    if (c > max) max = c;
+    if (c > topCnt) { topCnt = c; topSrc = b.dataset.src; }
   });
-  
-  document.getElementById('top-source').textContent = topSrc;
-  
+  document.getElementById('s-src-cnt').textContent = bars.length;
+  document.getElementById('s-top-src').textContent = topSrc;
+  document.getElementById('s-top-cnt').textContent = topCnt + ' entries';
   setTimeout(() => {
-    rows.forEach(r => {
-      const cnt = parseInt(r.dataset.cnt, 10);
-      const pct = maxCnt > 0 ? (cnt / maxCnt * 100) : 0;
-      r.querySelector('.bar-fill').style.width = Math.max(pct, 2) + '%';
+    bars.forEach(b => {
+      const pct = max > 0 ? parseInt(b.dataset.cnt,10) / max * 100 : 0;
+      b.querySelector('.bar-fill').style.width = Math.max(pct, 1.5) + '%';
     });
-  }, 100);
+  }, 80);
 }
 
-function filterTable() {
-  const q = document.getElementById('search').value.toLowerCase();
+// ── FILTER ────────────────────────────────────────────────────────────────
+function onFilter() {
+  const q   = document.getElementById('search').value.toLowerCase().trim();
   const src = document.getElementById('src-filter').value;
-  const rows = document.querySelectorAll('#main-table tbody tr.data-row');
-  visibleRows = [];
-  rows.forEach(r => {
-    const title = r.dataset.title.toLowerCase();
-    const content = (r.dataset.content || '').toLowerCase();
-    const rsrc  = r.dataset.src;
-    const show  = (!q || title.includes(q) || content.includes(q)) && (!src || rsrc === src);
-    r.classList.toggle('hidden', !show);
-    if (show) visibleRows.push(r);
+
+  allRows.forEach(r => { r.style.display = 'none'; r.classList.remove('expanded'); });
+
+  visibleRows = allRows.filter(r => {
+    const titleOk = !q || r.dataset.title.toLowerCase().includes(q) || (r.dataset.content||'').toLowerCase().includes(q);
+    const srcOk   = !src || r.dataset.src === src;
+    return titleOk && srcOk;
   });
-  document.getElementById('filter-count').textContent =
-    visibleRows.length < rows.length ? visibleRows.length + ' 条匹配' : '';
-  
-  if (sortCol !== -1) {
-    doSort();
-  } else {
-    currentPage = 1;
-    paginate();
-  }
+
+  // re-number after filter
+  visibleRows.forEach((r, i) => {
+    const nc = r.querySelector('td.num');
+    if (nc) nc.textContent = i + 1;
+  });
+
+  if (sortCol !== -1) applySortOrder();
+
+  renderedTo = 0;
+  updateStats();
+  revealBatch();
 }
 
-function sortTable(colIdx, type) {
-  const ths = document.querySelectorAll('#main-table th');
-  if (sortCol === colIdx) {
-    sortAsc = !sortAsc;
-  } else {
-    sortCol = colIdx;
-    sortAsc = true;
-  }
-  
-  ths.forEach((th, i) => {
-    th.classList.remove('sort-asc', 'sort-desc');
-    if (i === colIdx) {
-      th.classList.add(sortAsc ? 'sort-asc' : 'sort-desc');
-    }
+// ── SORT ──────────────────────────────────────────────────────────────────
+function sortTable(col) {
+  if (sortCol === col) { sortAsc = !sortAsc; } else { sortCol = col; sortAsc = true; }
+  document.querySelectorAll('thead th').forEach((th, i) => {
+    th.classList.remove('sort-asc','sort-desc');
+    if (i === col) th.classList.add(sortAsc ? 'sort-asc' : 'sort-desc');
   });
-  
-  doSort();
+  allRows.forEach(r => { r.style.display='none'; r.classList.remove('expanded'); });
+  applySortOrder();
+  renderedTo = 0;
+  revealBatch();
 }
 
-function doSort() {
-  if (sortCol === -1) return;
-  
+function applySortOrder() {
   visibleRows.sort((a, b) => {
-    let valA, valB;
-    if (sortCol === 1) {
-      valA = a.dataset.title.toLowerCase();
-      valB = b.dataset.title.toLowerCase();
-    } else if (sortCol === 2) {
-      valA = a.dataset.src.toLowerCase();
-      valB = b.dataset.src.toLowerCase();
-    } else if (sortCol === 3) {
-      valA = a.dataset.time;
-      valB = b.dataset.time;
-    }
-    
-    if (valA < valB) return sortAsc ? -1 : 1;
-    if (valA > valB) return sortAsc ? 1 : -1;
-    return 0;
+    const key = sortCol === 1 ? 'title' : sortCol === 2 ? 'src' : 'time';
+    const va = (key === 'title' ? a.dataset.title : key === 'src' ? a.dataset.src : a.dataset.time).toLowerCase();
+    const vb = (key === 'title' ? b.dataset.title : key === 'src' ? b.dataset.src : b.dataset.time).toLowerCase();
+    return va < vb ? (sortAsc?-1:1) : va > vb ? (sortAsc?1:-1) : 0;
   });
-  
-  const tbody = document.querySelector('#main-table tbody');
+  const tbody = document.getElementById('feed-tbody');
   visibleRows.forEach((r, i) => {
     tbody.appendChild(r);
-    // 更新序号列，避免排序后序号和行内容错位
-    const numCell = r.querySelector('td.num');
-    if (numCell) numCell.textContent = i + 1;
+    const nc = r.querySelector('td.num');
+    if (nc) nc.textContent = i + 1;
   });
-  
-  currentPage = 1;
-  paginate();
 }
 
-function paginate() {
-  const total = visibleRows.length;
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  currentPage = Math.min(currentPage, pages);
-  const start = (currentPage - 1) * PAGE_SIZE;
-  const end   = Math.min(start + PAGE_SIZE, total);
+// ── INFINITE SCROLL ───────────────────────────────────────────────────────
+function revealBatch() {
+  const status = document.getElementById('load-more-status');
+  const end = Math.min(renderedTo + BATCH, visibleRows.length);
+  for (let i = renderedTo; i < end; i++) {
+    visibleRows[i].style.display = '';
+  }
+  renderedTo = end;
 
-  visibleRows.forEach((r, i) => {
-    r.style.display = (i >= start && i < end) ? '' : 'none';
-    r.classList.remove('expanded');
-  });
-
-  const pg = document.getElementById('pagination');
-  pg.innerHTML = '';
-  const btn = (label, page, disabled, active) => {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (disabled) b.disabled = true;
-    if (active) b.classList.add('active');
-    b.onclick = () => { currentPage = page; paginate(); };
-    return b;
-  };
-  pg.appendChild(btn('«', 1, currentPage===1));
-  pg.appendChild(btn('‹', currentPage-1, currentPage===1));
-
-  let lo = Math.max(1, currentPage-2), hi = Math.min(pages, lo+4);
-  lo = Math.max(1, hi-4);
-  for (let p=lo; p<=hi; p++) pg.appendChild(btn(p, p, false, p===currentPage));
-
-  pg.appendChild(btn('›', currentPage+1, currentPage===pages));
-  pg.appendChild(btn('»', pages, currentPage===pages));
-
-  document.getElementById('page-info').textContent =
-    total > 0 ? '第 ' + currentPage + ' / ' + pages + ' 页，共 ' + total + ' 条' : '无匹配结果';
+  const remaining = visibleRows.length - renderedTo;
+  if (remaining <= 0) {
+    status.textContent = visibleRows.length > 0
+      ? '// end of feed — ' + visibleRows.length + ' records'
+      : '// no results match your query';
+    status.className = 'done';
+  } else {
+    status.textContent = '// ' + renderedTo + ' / ' + visibleRows.length + ' loaded';
+    status.className = '';
+  }
 }
 
-document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-  anchor.addEventListener('click', function (e) {
-    e.preventDefault();
-    const target = document.querySelector(this.getAttribute('href'));
-    if (target) {
-      const headerOffset = 80;
-      const elementPosition = target.getBoundingClientRect().top;
-      const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
-      window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
+function initScrollObserver() {
+  const sentinel = document.getElementById('scroll-sentinel');
+  const obs = new IntersectionObserver(entries => {
+    if (entries[0].isIntersecting && renderedTo < visibleRows.length) {
+      const status = document.getElementById('load-more-status');
+      status.className = 'loading';
+      // small delay for the terminal "loading" flicker effect
+      setTimeout(revealBatch, 120);
     }
+  }, { rootMargin: '200px' });
+  obs.observe(sentinel);
+}
+
+// ── ROW TOGGLE ────────────────────────────────────────────────────────────
+function toggleRow(tr) { tr.classList.toggle('expanded'); }
+
+// ── STATS ─────────────────────────────────────────────────────────────────
+function updateStats() {
+  document.getElementById('s-visible').textContent = visibleRows.length;
+  const fc = document.getElementById('filter-count');
+  fc.textContent = visibleRows.length < allRows.length
+    ? '[' + visibleRows.length + ' matched]' : '';
+}
+
+// ── SMOOTH ANCHOR ─────────────────────────────────────────────────────────
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    const t = document.querySelector(a.getAttribute('href'));
+    if (t) { e.preventDefault(); t.scrollIntoView({behavior:'smooth',block:'start'}); }
   });
 });
 
-document.addEventListener('DOMContentLoaded', () => {
-  initStatsAndChart();
-  visibleRows = Array.from(document.querySelectorAll('#main-table tbody tr.data-row'));
-  paginate();
-});
+document.addEventListener('DOMContentLoaded', init);
 </script>
 </body>
 </html>`
