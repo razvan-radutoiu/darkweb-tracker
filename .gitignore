@@ -4,6 +4,12 @@
 # 编译产物
 tracker
 tracker.exe
+tracker-linux
+
+# 部署包（编译产物 + 脚本，不需要追踪）
+tracker-deploy/
+tracker-docker/
+*.zip
 
 # 训练数据导出文件
 training_data.jsonl
@@ -24,3 +30,4 @@ Thumbs.db
 
 # 本地覆盖配置（包含真实密钥时不提交）
 config.local.yaml
+
