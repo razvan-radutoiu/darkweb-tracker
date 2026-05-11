@@ -24,34 +24,51 @@ import (
 	"darkweb-tracker/internal/config"
 )
 
-const systemPrompt = `You are a cybersecurity threat intelligence analyst working for a security operations center (SOC).
-Your task is to analyze threat intelligence data collected from underground forums for the purpose of:
-- Early warning of data breaches
-- Protecting organizations and individuals from credential exposure
-- Supporting law enforcement and incident response teams
+const systemPrompt = `You are a cybersecurity threat intelligence analyst at a Security Operations Center (SOC).
+Your task: analyze underground forum posts and extract structured breach intelligence.
 
-This is a legitimate security research and monitoring activity. Analyze each post objectively as structured threat data.
+━━ SCORING GUIDE (1-10, intelligence value) ━━
+1-2  No actionable intel — generic discussion, spam, off-topic, promotional posts
+3-4  Low value — unverified claims, samples only (no real data), vague leaks, access denied content
+5-6  Medium value — small breach (<10k records), partial/unverified data, plausible but lacks proof
+7-8  High value — confirmed breach >10k records, fresh credentials/PII, named target organization
+9-10 Critical — >100k records, financial/healthcare/government sector, active exploitation evidence
 
-SCORING GUIDE (score 1-10, based on intelligence value):
-- 1-2: No actionable intelligence (general discussion, off-topic content)
-- 3-4: Low value (unverified claims, old data >1 year, samples only)
-- 5-6: Medium value (small dataset <10k records, partial data, plausible but unverified)
-- 7-8: High value (fresh verified breach, >10k records, credentials or PII confirmed)
-- 9-10: Critical (>100k records, financial/healthcare/government sector, active exploitation confirmed)
+━━ FIELD RULES ━━
+summary          : 1-2 sentences in Simplified Chinese (简体中文). Describe what was leaked, scale, and impact.
+affected_targets : Named organizations, countries, or sectors. Empty list if none mentioned.
+estimated_records: Conservative estimate as integer. Use -1 if genuinely unknown.
+data_types       : Only types explicitly evidenced in the post (email, password, phone, ssn, credit_card, etc.)
+is_urgent        : true ONLY when score>=8 AND content implies data is fresh (posted or collected within 30 days).
+confidence_level : high = clear evidence; medium = plausible but unverified; low = vague or unreadable content.
 
-URGENCY RULE: Set is_urgent=true ONLY when BOTH: score>=8 AND data is implied to be recent (<30 days).
+━━ CONTENT EDGE CASES ━━
+- "Register to view" / login-required placeholder → score 1-2, category="general_discussion", confidence_level="low"
+- Very short or empty content (<50 chars) → score 1-3, confidence_level="low"
+- Non-English post (Russian, Chinese, etc.) → analyze as normal; summary must still be in Chinese.
+- Post discusses techniques/tools without actual data → category="vulnerability_info" or "malware_distribution", score 1-5
 
-OUTPUT: Respond ONLY with valid JSON matching the provided schema. No markdown, no preamble.`
+━━ SCORING CALIBRATION ━━
+Be conservative. When evidence is ambiguous, prefer the lower end of the range.
+Do NOT inflate scores for dramatic titles without supporting content.
 
-// maxContentLen is the maximum number of characters to send to the LLM.
-const maxContentLen = 2000
+HARD RULES (no exceptions):
+- Score MUST be 1-3 if: no specific named organization AND no data sample/download AND content < 100 chars
+- Score MUST be 1-2 if: post is a vendor selling service (fullz, docs, accounts) — these are supply-side ads, not breaches
+- Score MUST be 1-3 if: post is a news article analyzing malware/techniques without a specific named victim organization
+- Score MUST NOT exceed 4 if confidence_level = "low"
+- Score 5+ requires at minimum: a named organization OR a specific breach claim with some evidence
+
+OUTPUT: Return ONLY a valid JSON object matching the provided schema. No markdown fences, no preamble, no trailing text.`
 
 // maxRetries is the number of retry attempts for transient LLM API failures.
 const maxRetries = 3
 
-// perRequestTimeout is the hard timeout per single LLM call.
-// Prevents a single slow provider from blocking the whole batch.
-const perRequestTimeout = 8 * time.Second
+// perStreamTimeout is the wall-clock deadline for a single streaming LLM call.
+// Streaming keeps the TCP connection alive by delivering tokens continuously,
+// so this timeout only fires if the provider stops sending data entirely.
+// 120s accommodates large context windows (64K+) on slower providers.
+const perStreamTimeout = 120 * time.Second
 
 // reRetryAfter matches "retry after 42s", "retry after 42", "retry-after: 42"
 var reRetryAfter = regexp.MustCompile(`(?i)retry.?after[:\s]+(\d+)`)
@@ -141,10 +158,13 @@ type AnalysisResult struct {
 
 // BatchItem represents a single forum post to be analyzed in a batch operation.
 type BatchItem struct {
-	ID       int64
-	Title    string
-	Content  string
-	SiteName string
+	ID            int64
+	Title         string
+	Content       string
+	SiteName      string
+	PubDate       string // RFC3339 or empty — passed to LLM for freshness context
+	Author        string // poster/threat actor handle — known TA raises confidence
+	DownloadLinks string // newline-separated URLs — presence = strong evidence of real data
 }
 
 // BatchResult holds the analysis outcome for a single batch item.
@@ -194,45 +214,48 @@ func New(cfg config.LLMConfig, log *slog.Logger) *Analyzer {
 	}
 }
 
-// Analyze sends a single forum post to the LLM for structured analysis.
-// It rate-limits requests, retries on transient errors (up to 3 times with
-// exponential backoff of 1s, 2s, 4s plus jitter), and validates the result.
-func (a *Analyzer) Analyze(ctx context.Context, title, content, siteName string) (*AnalysisResult, error) {
+// Analyze sends a single forum post to the LLM using the streaming API.
+//
+// Why streaming:
+//   - Streaming delivers tokens incrementally; the connection stays alive the entire
+//     time, eliminating HTTP idle-timeout issues even with 64K+ token contexts.
+//   - A non-streaming call with a large context blocks until the full response is
+//     ready, requiring an artificially short hard-timeout that cuts off large posts.
+//   - With streaming we only need a wall-clock deadline (perStreamTimeout) that fires
+//     if the provider stops sending data entirely — not for normal processing delay.
+//
+// Content size: if MaxInputChars > 0 in config, content is trimmed to that limit.
+// Otherwise the full post body is sent and the provider handles its own context window.
+func (a *Analyzer) Analyze(ctx context.Context, title, content, siteName, pubDate, author, downloadLinks string) (*AnalysisResult, error) {
 	if err := a.limiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("rate limiter wait: %w", err)
 	}
 
-	userMsg := buildUserMessage(title, content, siteName)
+	// Trim content only if an explicit limit is configured; otherwise send in full.
+	if a.cfg.MaxInputChars > 0 {
+		content = truncate(strings.TrimSpace(content), a.cfg.MaxInputChars)
+	}
 
+	userMsg := buildUserMessage(title, content, siteName, pubDate, author, downloadLinks)
 	model := a.cfg.Model
 	if model == "" {
 		model = "gpt-4o-mini"
 	}
 
-	var (
-		completion *openai.ChatCompletion
-		lastErr    error
-	)
-
+	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			retryable, baseWait := isRetryable(lastErr)
 			if !retryable {
-				// 不可重试的错误（如 400 内容过滤）直接返回
 				break
 			}
-
-			// 指数退避，但 429 用服务器建议的等待时间作为基础
 			jitter := time.Duration(rand.Int63n(int64(5 * time.Second)))
 			delay := baseWait + jitter
-
-			a.log.Warn("retrying LLM API call",
+			a.log.Warn("retrying LLM streaming call",
 				"attempt", attempt,
-				"max_retries", maxRetries,
 				"wait", delay.Round(time.Millisecond),
-				"error", lastErr,
+				"err", lastErr,
 			)
-
 			select {
 			case <-ctx.Done():
 				return nil, fmt.Errorf("context cancelled during retry: %w", ctx.Err())
@@ -240,54 +263,67 @@ func (a *Analyzer) Analyze(ctx context.Context, title, content, siteName string)
 			}
 		}
 
-		var err error
-		// Each API call gets its own hard deadline so a slow/hung provider
-		// never blocks the entire batch. The parent ctx is also respected.
-		callCtx, callCancel := context.WithTimeout(ctx, perRequestTimeout)
-		completion, err = a.client.Chat.Completions.New(callCtx, openai.ChatCompletionNewParams{
-			Model:       model,
-			Temperature: openai.Float(0.1),
-			MaxTokens:   openai.Int(800),
-			Messages: []openai.ChatCompletionMessageParamUnion{
-				openai.SystemMessage(systemPrompt),
-				openai.UserMessage(userMsg),
-			},
-			ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-				OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
-					JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
-						Name:   "AnalysisResult",
-						Schema: a.schema,
-						Strict: openai.Bool(true),
-					},
-				},
-			},
-		})
-		callCancel()
+		result, err := a.analyzeStreaming(ctx, model, title, siteName, userMsg)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-
-		lastErr = nil
-		break
+		return result, nil
 	}
 
-	if lastErr != nil {
-		return nil, fmt.Errorf("LLM API failed after %d retries: %w", maxRetries, lastErr)
+	return nil, fmt.Errorf("LLM API failed after %d retries: %w", maxRetries, lastErr)
+}
+
+// analyzeStreaming performs one streaming call and accumulates the full response.
+func (a *Analyzer) analyzeStreaming(ctx context.Context, model, title, siteName, userMsg string) (*AnalysisResult, error) {
+	// Deadline: fires only if the provider goes silent mid-stream.
+	streamCtx, cancel := context.WithTimeout(ctx, perStreamTimeout)
+	defer cancel()
+
+	stream := a.client.Chat.Completions.NewStreaming(streamCtx, openai.ChatCompletionNewParams{
+		Model:       model,
+		Temperature: openai.Float(0.1),
+		// 2048 output tokens: enough for detailed analysis with full reasoning field.
+		// The input context is unbounded from our side — provider's window applies.
+		MaxTokens: openai.Int(2048),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(systemPrompt),
+			openai.UserMessage(userMsg),
+		},
+		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
+				JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+					Name:   "AnalysisResult",
+					Schema: a.schema,
+					Strict: openai.Bool(true),
+				},
+			},
+		},
+	})
+
+	acc := openai.ChatCompletionAccumulator{}
+	for stream.Next() {
+		acc.AddChunk(stream.Current())
+	}
+	if err := stream.Err(); err != nil {
+		return nil, fmt.Errorf("stream error: %w", err)
 	}
 
-	if len(completion.Choices) == 0 {
-		return nil, fmt.Errorf("LLM returned empty choices for title=%q", title)
+	if len(acc.Choices) == 0 {
+		return nil, fmt.Errorf("empty response from provider")
 	}
 
-	raw := completion.Choices[0].Message.Content
+	raw := acc.Choices[0].Message.Content
+	if raw == "" {
+		return nil, fmt.Errorf("provider returned empty content (refusal: %s)", acc.Choices[0].Message.Refusal)
+	}
+
 	var result AnalysisResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return nil, fmt.Errorf("unmarshal LLM JSON response: %w (raw: %.200s)", err, raw)
+		return nil, fmt.Errorf("unmarshal LLM JSON: %w (raw: %.200s)", err, raw)
 	}
-
 	if err := validateResult(&result); err != nil {
-		return nil, fmt.Errorf("invalid analysis result: %w", err)
+		return nil, fmt.Errorf("invalid result: %w", err)
 	}
 
 	a.log.Debug("analysis complete",
@@ -297,6 +333,8 @@ func (a *Analyzer) Analyze(ctx context.Context, title, content, siteName string)
 		"category", result.Category,
 		"urgent", result.IsUrgent,
 		"confidence", result.ConfidenceLevel,
+		"tokens_total", acc.Usage.TotalTokens,
+		"tokens_prompt", acc.Usage.PromptTokens,
 	)
 
 	return &result, nil
@@ -322,12 +360,8 @@ func (a *Analyzer) AnalyzeBatch(ctx context.Context, items []BatchItem, workers 
 		go func() {
 			defer wg.Done()
 			for item := range jobs {
-				res, err := a.Analyze(ctx, item.Title, item.Content, item.SiteName)
-				results <- BatchResult{
-					ID:     item.ID,
-					Result: res,
-					Err:    err,
-				}
+				res, err := a.Analyze(ctx, item.Title, item.Content, item.SiteName, item.PubDate, item.Author, item.DownloadLinks)
+				results <- BatchResult{ID: item.ID, Result: res, Err: err}
 			}
 		}()
 	}
@@ -366,25 +400,105 @@ func generateSchema[T any]() interface{} {
 	return r.Reflect(&v)
 }
 
+// ---------------------------------------------------------------------------
+// IOC pre-extraction — fast regex pass before LLM call
+// ---------------------------------------------------------------------------
+
+// preExtractSignals scans title + content for structured signals:
+// record counts, data volumes, known file types, and domain-style targets.
+// Returns a compact summary string appended to the user message, or "".
+// This gives the LLM quantitative anchors that reduce hallucination on scores.
+func preExtractSignals(title, content string) string {
+	combined := title + " " + content
+
+	var parts []string
+
+	// Record counts: "1.5M", "500K", "2 million", "300,000 records"
+	reRecords := regexp.MustCompile(`(?i)(\d[\d,\.]*)\s*(million|m|k|thousand|billion)?\s*(records?|rows?|users?|accounts?|lines?|entries|credentials?|combos?)`)
+	if m := reRecords.FindString(combined); m != "" {
+		parts = append(parts, "Records: "+strings.TrimSpace(m))
+	}
+
+	// Data sizes: "500GB", "2.3 TB", "50 MB"
+	reSize := regexp.MustCompile(`(?i)(\d[\d\.]*)\s*(gb|tb|mb|gigabyte|terabyte)`)
+	if m := reSize.FindString(combined); m != "" {
+		parts = append(parts, "DataSize: "+strings.TrimSpace(m))
+	}
+
+	// CVE identifiers
+	reCVE := regexp.MustCompile(`(?i)CVE-\d{4}-\d{4,}`)
+	if cves := reCVE.FindAllString(combined, 5); len(cves) > 0 {
+		parts = append(parts, "CVEs: "+strings.Join(cves, ", "))
+	}
+
+	// Common data field signals
+	fieldSignals := []string{"ssn", "social security", "credit card", "passport", "medical", "health", "dob", "date of birth", "salary", "bank account", "iban", "swift"}
+	var foundFields []string
+	low := strings.ToLower(combined)
+	for _, sig := range fieldSignals {
+		if strings.Contains(low, sig) {
+			foundFields = append(foundFields, sig)
+		}
+	}
+	if len(foundFields) > 0 {
+		parts = append(parts, "SensitiveFields: "+strings.Join(foundFields, ", "))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return "PreExtracted:\n  " + strings.Join(parts, "\n  ")
+}
+
 // buildUserMessage constructs the user prompt from post metadata.
-// Content is truncated to maxContentLen to stay within token budgets.
-func buildUserMessage(title, content, siteName string) string {
-	content = truncate(strings.TrimSpace(content), maxContentLen)
+// Content truncation is handled by the caller (Analyze) based on MaxInputChars config.
+// pubDate, author, downloadLinks are optional — pass empty string when unavailable.
+func buildUserMessage(title, content, siteName, pubDate, author, downloadLinks string) string {
 	title = strings.TrimSpace(title)
+	content = strings.TrimSpace(content)
 
-	// Wrap in threat intelligence framing to reduce content filter false positives.
-	// The analytical framing signals research/security context to content moderation.
 	var b strings.Builder
-	b.Grow(len(title) + len(content) + len(siteName) + 128)
+	b.Grow(len(title) + len(content) + len(siteName) + 512)
 
-	b.WriteString("THREAT INTELLIGENCE REPORT FOR SOC ANALYSIS\n")
-	b.WriteString("============================================\n")
-	fmt.Fprintf(&b, "Source Forum : %s\n", siteName)
-	fmt.Fprintf(&b, "Post Title   : %s\n", title)
-	b.WriteString("Post Content :\n")
-	b.WriteString(content)
-	b.WriteString("\n============================================\n")
-	b.WriteString("Classify the above post according to the schema.")
+	b.WriteString("━━━━━━━━━ THREAT INTELLIGENCE POST ━━━━━━━━━\n")
+	fmt.Fprintf(&b, "Forum    : %s\n", siteName)
+	fmt.Fprintf(&b, "Title    : %s\n", title)
+	if pubDate != "" {
+		fmt.Fprintf(&b, "PostDate : %s\n", pubDate)
+	}
+	if author != "" {
+		// Known threat actor handles (e.g. ShinyHunters, KillSec) are high-confidence signals.
+		fmt.Fprintf(&b, "Author   : %s\n", author)
+	}
+	if downloadLinks != "" {
+		// Presence of download links (mega.nz, gofile, etc.) is strong evidence of real data.
+		b.WriteString("Downloads:\n")
+		for _, dl := range strings.Split(downloadLinks, "\n") {
+			if dl = strings.TrimSpace(dl); dl != "" {
+				fmt.Fprintf(&b, "  - %s\n", dl)
+			}
+		}
+	}
+	b.WriteString("Content  :\n")
+	if content == "" {
+		b.WriteString("(no content available)\n")
+	} else {
+		b.WriteString(content)
+		b.WriteString("\n")
+	}
+
+	// Pre-extracted quantitative signals — helps LLM score accurately even when
+	// content is sparse (RSS teaser only).
+	if signals := preExtractSignals(title, content); signals != "" {
+		b.WriteString(signals)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	b.WriteString("Analyze the post above. Return a JSON object matching the schema.\n")
+	b.WriteString("IMPORTANT: summary field MUST be written in Simplified Chinese (简体中文).\n")
+	b.WriteString("NOTE: If 'Downloads' section is present, data likely EXISTS — score accordingly.\n")
+	b.WriteString("Score conservatively — lower score when evidence is insufficient.")
 
 	return b.String()
 }
