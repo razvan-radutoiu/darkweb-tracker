@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,40 +47,55 @@ OUTPUT: Respond ONLY with valid JSON matching the provided schema. No markdown, 
 const maxContentLen = 2000
 
 // maxRetries is the number of retry attempts for transient LLM API failures.
-const maxRetries = 5
+const maxRetries = 3
 
-// retryableErrors that warrant a backoff-retry rather than immediate failure.
-// 429 = rate limit, 5xx = server error, connection errors.
+// perRequestTimeout is the hard timeout per single LLM call.
+// Prevents a single slow provider from blocking the whole batch.
+const perRequestTimeout = 8 * time.Second
+
+// reRetryAfter matches "retry after 42s", "retry after 42", "retry-after: 42"
+var reRetryAfter = regexp.MustCompile(`(?i)retry.?after[:\s]+(\d+)`)
+
+// isRetryable reports whether err warrants a backoff-retry and how long to wait.
+// It parses the retry-after value from the error message when present.
+// Returns (false, 0) for non-retryable errors (e.g. 400 content filter).
+//
+// ErrRPDExhausted is returned as a sentinel when daily quota is fully consumed —
+// the caller should stop retrying and fall back to another provider.
+var ErrRPDExhausted = fmt.Errorf("daily request quota exhausted (RPD)")
+
 func isRetryable(err error) (bool, time.Duration) {
 	if err == nil {
 		return false, 0
 	}
 	msg := err.Error()
 
-	// Parse 429 Retry-After if present
+	// 429 — rate limited. Try to read exact retry-after from error message.
 	if strings.Contains(msg, "429") {
-		// Try to extract Retry-After seconds from error message
-		// GitHub Models returns: "retry after Xs" or header-based
-		wait := 60 * time.Second // conservative default for 429
-		if strings.Contains(msg, "retry after") {
-			// best-effort parse — fall back to default
+		wait := 15 * time.Second // safe default; most providers reset within 10-60s
+		if m := reRetryAfter.FindStringSubmatch(msg); len(m) > 1 {
+			if secs, e := strconv.Atoi(m[1]); e == nil && secs > 0 {
+				wait = time.Duration(secs)*time.Second + 500*time.Millisecond
+			}
+		}
+		// Cap at 90s — if the provider wants us to wait longer, we'd rather
+		// fall back to another provider than hold up the batch.
+		if wait > 90*time.Second {
+			wait = 90 * time.Second
 		}
 		return true, wait
 	}
 
-	// 5xx server errors
-	if strings.Contains(msg, "500") ||
-		strings.Contains(msg, "502") ||
-		strings.Contains(msg, "503") ||
-		strings.Contains(msg, "504") {
-		return true, 10 * time.Second
+	// 5xx server errors — short backoff, worth retrying once
+	if strings.Contains(msg, "500") || strings.Contains(msg, "502") ||
+		strings.Contains(msg, "503") || strings.Contains(msg, "504") {
+		return true, 5 * time.Second
 	}
 
 	// Network / connection errors
-	if strings.Contains(msg, "connection") ||
-		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "EOF") {
-		return true, 5 * time.Second
+	if strings.Contains(msg, "connection") || strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "EOF") || strings.Contains(msg, "context deadline") {
+		return true, 3 * time.Second
 	}
 
 	return false, 0
@@ -224,7 +241,10 @@ func (a *Analyzer) Analyze(ctx context.Context, title, content, siteName string)
 		}
 
 		var err error
-		completion, err = a.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		// Each API call gets its own hard deadline so a slow/hung provider
+		// never blocks the entire batch. The parent ctx is also respected.
+		callCtx, callCancel := context.WithTimeout(ctx, perRequestTimeout)
+		completion, err = a.client.Chat.Completions.New(callCtx, openai.ChatCompletionNewParams{
 			Model:       model,
 			Temperature: openai.Float(0.1),
 			MaxTokens:   openai.Int(800),
@@ -242,6 +262,7 @@ func (a *Analyzer) Analyze(ctx context.Context, title, content, siteName string)
 				},
 			},
 		})
+		callCancel()
 		if err != nil {
 			lastErr = err
 			continue

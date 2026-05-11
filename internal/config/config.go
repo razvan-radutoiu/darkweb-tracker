@@ -59,6 +59,8 @@ type LLMConfig struct {
 	// BaseURL overrides the API endpoint. Leave empty for official OpenAI.
 	// DeepSeek: https://api.deepseek.com/v1
 	// Ollama:   http://localhost:11434/v1
+	// Groq:     https://api.groq.com/openai/v1
+	// Gemini:   https://generativelanguage.googleapis.com/v1beta/openai
 	BaseURL string `yaml:"base_url"` // LLM_BASE_URL
 
 	// APIKey is the authentication token.
@@ -84,6 +86,20 @@ type LLMConfig struct {
 
 	// SkipAnalyzedItems skips re-analysis of items that already have a result in DB.
 	SkipAnalyzedItems bool `yaml:"skip_analyzed_items"` // LLM_SKIP_ANALYZED
+
+	// FallbackProviders are secondary providers tried in order when primary fails.
+	// Each entry uses the same fields as the primary (base_url, api_key, model).
+	// The rules engine is always appended automatically as the final fallback.
+	FallbackProviders []LLMProviderConfig `yaml:"fallback_providers"` // LLM_FALLBACK_*
+}
+
+// LLMProviderConfig is a secondary provider entry inside LLMConfig.FallbackProviders.
+type LLMProviderConfig struct {
+	Name    string `yaml:"name"`     // display name, e.g. "groq", "gemini"
+	BaseURL string `yaml:"base_url"` // OpenAI-compatible endpoint
+	APIKey  string `yaml:"api_key"`  // auth token
+	Model   string `yaml:"model"`    // model id
+	RPM     int    `yaml:"rpm"`      // rate limit (requests/min)
 }
 
 type PushConfig struct {
@@ -361,6 +377,38 @@ func applyEnv(r *rawConfig) {
 	envInt("LLM_URGENT_THRESHOLD", &r.LLM.UrgentScoreThreshold)
 	envInt("LLM_DAILY_TOP_N", &r.LLM.DailyTopN)
 	envBool("LLM_SKIP_ANALYZED", &r.LLM.SkipAnalyzedItems)
+
+	// Fallback providers via env: LLM_FALLBACK_1_BASE_URL, LLM_FALLBACK_1_API_KEY, etc.
+	// Supports up to 5 fallback providers (indices 1-5).
+	for i := 1; i <= 5; i++ {
+		prefix := fmt.Sprintf("LLM_FALLBACK_%d_", i)
+		baseURL := os.Getenv(prefix + "BASE_URL")
+		apiKey := os.Getenv(prefix + "API_KEY")
+		model := os.Getenv(prefix + "MODEL")
+		if baseURL == "" && apiKey == "" {
+			break // no more fallbacks defined
+		}
+		name := os.Getenv(prefix + "NAME")
+		if name == "" {
+			name = fmt.Sprintf("fallback-%d", i)
+		}
+		rpm := 30 // safe default for free tier
+		envInt(prefix+"RPM", &rpm)
+
+		// Extend or overwrite slot i-1 in FallbackProviders.
+		p := LLMProviderConfig{
+			Name:    name,
+			BaseURL: baseURL,
+			APIKey:  apiKey,
+			Model:   model,
+			RPM:     rpm,
+		}
+		if i-1 < len(r.LLM.FallbackProviders) {
+			r.LLM.FallbackProviders[i-1] = p
+		} else {
+			r.LLM.FallbackProviders = append(r.LLM.FallbackProviders, p)
+		}
+	}
 
 	// Sources
 	envStr("SOURCES_REMOTE_URL", &r.Sources.RemoteURL)
