@@ -14,10 +14,6 @@ name: DarkWeb Forums Tracker
         description: '跳过 AI 分析（节省 API 配额）'
         type: boolean
         default: false
-      health_check:
-        description: '源健康检查'
-        type: boolean
-        default: true
       skip_tor:
         description: '跳过 Tor（调试用，直连抓取）'
         type: boolean
@@ -58,40 +54,35 @@ jobs:
       - name: 安装并启动 Tor
         if: ${{ inputs.skip_tor != true }}
         run: |
-          sudo apt-get install -y -q tor
+          sudo apt-get install -y -q tor netcat-openbsd
 
-          sudo tee /etc/tor/torrc > /dev/null <<'TORRC'
-          SocksPort 9050
-          SocksPolicy accept 127.0.0.1
-          Log notice stderr
-          DataDirectory /var/lib/tor
-          MaxCircuitDirtiness 600
-          NewCircuitPeriod 30
-          NumEntryGuards 3
-          TORRC
+          printf 'SocksPort 9050\nSocksPolicy accept 127.0.0.1\nLog notice stdout\nDataDirectory /var/lib/tor\nMaxCircuitDirtiness 600\nNewCircuitPeriod 30\nNumEntryGuards 3\n' | sudo tee /etc/tor/torrc > /dev/null
 
-          sudo systemctl start tor
+          sudo systemctl restart tor
 
-          echo "⏳ 等待 Tor 网络就绪..."
-          for i in $(seq 1 60); do
-            if sudo journalctl -u tor --no-pager -n 20 2>/dev/null | grep -q "Bootstrapped 100%"; then
-              echo "✅ Tor 已就绪（${i}s）"
+          echo "⏳ 等待 Tor SOCKS5 端口就绪..."
+          for i in $(seq 1 90); do
+            if nc -z 127.0.0.1 9050 2>/dev/null; then
+              echo "✅ Tor SOCKS5 端口已开放（${i}s）"
               break
             fi
             sleep 1
-            if [ "$i" -eq 60 ]; then
-              echo "::warning::Tor 未能在 60 秒内完成启动，将尝试直连"
+            if [ "$i" -eq 90 ]; then
+              echo "::warning::Tor 未能在 90 秒内就绪，将尝试直连"
             fi
           done
 
-          TOR_IP=$(curl -s --socks5-hostname 127.0.0.1:9050 https://api.ipify.org 2>/dev/null || echo "unknown")
-          REAL_IP=$(curl -s https://api.ipify.org 2>/dev/null || echo "unknown")
+          sleep 10
+
+          TOR_IP=$(curl -s --max-time 30 --socks5-hostname 127.0.0.1:9050 https://api.ipify.org 2>/dev/null || echo "unknown")
+          REAL_IP=$(curl -s --max-time 10 https://api.ipify.org 2>/dev/null || echo "unknown")
           echo "🧅 Tor 出口 IP : ${TOR_IP}"
           echo "📍 真实 IP     : ${REAL_IP}"
           if [ "$TOR_IP" != "$REAL_IP" ] && [ "$TOR_IP" != "unknown" ]; then
             echo "✅ Tor 匿名代理验证通过"
           else
-            echo "::warning::Tor IP 未变化，代理可能未生效"
+            echo "::warning::Tor IP 未变化或无法连接"
+            sudo systemctl status tor --no-pager || true
           fi
 
       - name: Setup Go
@@ -103,38 +94,31 @@ jobs:
       - name: Build
         run: |
           VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-          go build \
-            -ldflags="-s -w -X main.Version=${VERSION}" \
-            -o tracker \
-            ./cmd/tracker
+          go build -ldflags="-s -w -X main.Version=${VERSION}" -o tracker ./cmd/tracker
           echo "Binary: $(./tracker --version)"
 
       - name: Run tracker
         id: run
         env:
-          LLM_API_KEY:       ${{ secrets.GITHUB_TOKEN }}
-          DISCORD_WEBHOOK:   ${{ secrets.DISCORD_WEBHOOK }}
-          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
-          DINGTALK_WEBHOOK:  ${{ secrets.DINGTALK_WEBHOOK }}
-          DINGTALK_SECRET:   ${{ secrets.DINGTALK_SECRET }}
-          FEISHU_WEBHOOK:    ${{ secrets.FEISHU_WEBHOOK }}
-          DISCORD_ENABLED:   ${{ secrets.DISCORD_WEBHOOK != '' && 'true' || 'false' }}
-          TELEGRAM_ENABLED:  ${{ secrets.TELEGRAM_TOKEN != '' && 'true' || 'false' }}
-          DINGTALK_ENABLED:  ${{ secrets.DINGTALK_WEBHOOK != '' && 'true' || 'false' }}
-          FEISHU_ENABLED:    ${{ secrets.FEISHU_WEBHOOK != '' && 'true' || 'false' }}
-          TOR_SOCKS:         ${{ inputs.skip_tor == true && '' || 'socks5://127.0.0.1:9050' }}
+          LLM_API_KEY:         ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK:     ${{ secrets.DISCORD_WEBHOOK }}
+          TELEGRAM_TOKEN:      ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+          DINGTALK_WEBHOOK:    ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET:     ${{ secrets.DINGTALK_SECRET }}
+          FEISHU_WEBHOOK:      ${{ secrets.FEISHU_WEBHOOK }}
+          DISCORD_ENABLED:     ${{ secrets.DISCORD_WEBHOOK != '' && 'true' || 'false' }}
+          TELEGRAM_ENABLED:    ${{ secrets.TELEGRAM_TOKEN != '' && 'true' || 'false' }}
+          DINGTALK_ENABLED:    ${{ secrets.DINGTALK_WEBHOOK != '' && 'true' || 'false' }}
+          FEISHU_ENABLED:      ${{ secrets.FEISHU_WEBHOOK != '' && 'true' || 'false' }}
+          TOR_SOCKS:           ${{ inputs.skip_tor == true && '' || 'socks5://127.0.0.1:9050' }}
           NIGHT_SLEEP_ENABLED: "false"
-          LLM_ENABLED:       ${{ inputs.skip_ai == true && 'false' || '' }}
+          LLM_ENABLED:         ${{ inputs.skip_ai == true && 'false' || '' }}
         run: |
           echo "report_date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
           echo "report_time=$(date +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_OUTPUT
-
           ARGS="--once --config config.yaml --db data_leaks.db"
-          if [ "${{ inputs.debug }}" = "true" ]; then
-            ARGS="$ARGS --debug"
-          fi
-
+          if [ "${{ inputs.debug }}" = "true" ]; then ARGS="$ARGS --debug"; fi
           echo "::group::Tracker 运行日志"
           ./tracker $ARGS
           echo "::endgroup::"
@@ -147,17 +131,8 @@ jobs:
         id: commit
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: |
-            auto: 扫描更新 ${{ steps.run.outputs.report_time }} [skip ci]
-
-            - 抓取 DarkWeb 论坛 RSS（SQLite 按链接去重，不写入重复条目）
-            - 规则引擎评分 / AI 分析
-            - 生成日报 HTML
-          file_pattern: |
-            data_leaks.db
-            archive/**
-            rss/**
-            index.html
+          commit_message: "auto: 扫描更新 ${{ steps.run.outputs.report_time }} [skip ci]"
+          file_pattern: "data_leaks.db archive/** rss/** index.html"
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"
           commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
@@ -168,10 +143,8 @@ jobs:
         run: |
           if [ -d "archive" ] && [ "$(ls -A archive 2>/dev/null)" ]; then
             echo "has_reports=true" >> $GITHUB_OUTPUT
-            echo "✅ archive/ 有内容，将部署到 Pages"
           else
             echo "has_reports=false" >> $GITHUB_OUTPUT
-            echo "⚠️ archive/ 为空，跳过 Pages 部署"
           fi
 
       - name: 准备 Pages 部署目录
@@ -181,19 +154,7 @@ jobs:
           if [ -f "index.html" ]; then
             cp index.html _site/index.html
           else
-            LATEST=$(ls -1d archive/????-??-??/ 2>/dev/null | sort | tail -1)
-            LATEST_HTML=$(ls -1 ${LATEST}*.html 2>/dev/null | tail -1)
-            if [ -n "$LATEST_HTML" ]; then
-              TARGET="${LATEST_HTML#archive/}"
-              cat > _site/index.html <<HTMLEOF
-          <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
-          <meta http-equiv="refresh" content="0; url=archive/${TARGET}">
-          <title>DarkWeb Forums Tracker</title></head>
-          <body><p>跳转中... <a href="archive/${TARGET}">点击此处</a></p></body></html>
-          HTMLEOF
-            else
-              echo "<html><body><p>首次运行后报告将显示在此处</p></body></html>" > _site/index.html
-            fi
+            echo "<html><body><p>首次运行后报告将显示在此处</p></body></html>" > _site/index.html
           fi
           [ -d archive ] && cp -r archive _site/archive
           [ -d rss ]     && cp -r rss _site/rss
