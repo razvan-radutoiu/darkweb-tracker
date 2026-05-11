@@ -7,15 +7,22 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"darkweb-tracker/internal/analyzer"
 	"darkweb-tracker/internal/config"
 	"darkweb-tracker/internal/feed"
+	"darkweb-tracker/internal/filter"
 	"darkweb-tracker/internal/notify"
 	"darkweb-tracker/internal/report"
 	"darkweb-tracker/internal/storage"
 )
+
+// beijingTime returns now in UTC+8 (no tzdata dependency).
+func beijingTime() time.Time {
+	return time.Now().UTC().Add(8 * time.Hour)
+}
 
 // Scheduler orchestrates polling, deduplication, AI analysis, notification, and reporting.
 type Scheduler struct {
@@ -25,8 +32,13 @@ type Scheduler struct {
 	db        *storage.DB
 	notifier  *notify.Multi
 	generator *report.Generator
-	analyzer  analyzer.ItemAnalyzer // nil when no analyzer configured
+	analyzer  analyzer.ItemAnalyzer
 	log       *slog.Logger
+
+	// Dedup guards: prevent daily/weekly reports from firing multiple times
+	// when polling interval is short (e.g. 1 minute).
+	lastDailyDate  string // "2006-01-02" in Beijing time
+	lastWeeklyDate string // "2006-Www" ISO week in Beijing time
 }
 
 func New(
@@ -46,72 +58,181 @@ func New(
 	}
 }
 
-// RunOnce 执行一次完整采集周期：
+// ---------------------------------------------------------------------------
+// RunOnce — channel-pipeline architecture
 //
-//  1. 并行抓取所有 RSS 源
-//  2. 全部去重入库
-//  3. 对所有新条目一次性批量 AI 分析
-//  4. 紧急条目立即推送
-//  5. 生成日报 / 周报
+//   Fetch goroutines (one per source) push new items into itemsCh as soon as
+//   each source completes — without waiting for slow sources.
+//   Analysis workers drain itemsCh concurrently, analyze each item immediately
+//   through the provider chain (LLM → fallback → rules engine), persist the
+//   result, and push to notification channels if score >= notify_min_score.
+//
+//   Flow:
+//     [Source A] ──┐
+//     [Source B] ──┼──► itemsCh ──► [worker 0] ──► analyze ──► push
+//     [Source C] ──┘           └──► [worker 1] ──► analyze ──► push
+//
+// ---------------------------------------------------------------------------
+
 func (s *Scheduler) RunOnce(ctx context.Context) error {
 	start := time.Now()
 	s.log.Info("poll cycle start", "sources", len(s.sources))
 
-	// ── Phase 1: 并行抓取所有源 ──────────────────────────────────────────────
-	allNew := s.fetchAllSources(ctx)
-	s.log.Info("fetch complete",
-		"new_items", len(allNew),
-		"elapsed", time.Since(start).Round(time.Millisecond),
-	)
+	// itemsCh carries newly-inserted items from fetch goroutines to analysis workers.
+	// Buffer size = total sources × typical max new items per source to avoid blocking.
+	itemsCh := make(chan storage.Item, 512)
 
-	// ── Phase 2: 一次性批量 AI 分析 ──────────────────────────────────────────
-	if len(allNew) > 0 {
-		if s.analyzer != nil {
-			s.batchAnalyzeAndNotify(ctx, allNew)
-		} else {
-			// 无 AI：直接推送每条新数据
-			for _, item := range allNew {
-				s.notifier.Send(ctx, notify.Message{
-					Title:    item.SiteName + " 新增数据泄露",
-					Body:     item.Title,
-					Link:     item.Link,
-					SiteName: item.SiteName,
-					Kind:     notify.KindNormal,
-				})
-			}
+	var totalNew atomic.Int64
+
+	// ── Start analysis workers ──────────────────────────────────────────────
+	workers := s.cfg.LLM.Workers
+	if workers <= 0 {
+		workers = 3
+	}
+
+	var workerWg sync.WaitGroup
+	if s.analyzer != nil {
+		for w := 0; w < workers; w++ {
+			workerWg.Add(1)
+			go s.analyzeWorker(ctx, &workerWg, itemsCh, &totalNew)
 		}
 	}
 
-	// ── Phase 3: 补推遗漏的紧急项 ────────────────────────────────────────────
+	// ── Fetch all sources in parallel ───────────────────────────────────────
+	// Each goroutine pushes new items immediately upon completion — the fastest
+	// sources feed the workers right away without waiting for slow ones.
+	var fetchWg sync.WaitGroup
+	for _, src := range s.sources {
+		fetchWg.Add(1)
+		go func(src config.DataSource) {
+			defer fetchWg.Done()
+
+			items, err := s.fetcher.Fetch(ctx, src)
+			if err != nil {
+				s.log.Warn("fetch failed", "source", src.Name, "err", err)
+				return
+			}
+
+			newItems := s.insertNew(ctx, items)
+			if len(newItems) == 0 {
+				return
+			}
+
+			// Filter out posts older than MaxItemAgeDays.
+			// Old posts are already in DB (for future dedup) but skip analysis/push.
+			freshItems, staleCount := s.freshItems(newItems)
+			if staleCount > 0 {
+				s.log.Info("source: skipped old posts",
+					"source", src.Name,
+					"stale", staleCount,
+					"fresh", len(freshItems),
+					"max_age_days", s.cfg.MaxItemAgeDays,
+				)
+			}
+			if len(freshItems) == 0 {
+				return
+			}
+			s.log.Info("source: new items queued",
+				"source", src.Name,
+				"fresh", len(freshItems),
+				"total_fetched", len(items),
+			)
+
+			if s.analyzer != nil {
+				// Hand off to analysis workers immediately.
+				for _, item := range freshItems {
+					select {
+					case itemsCh <- item:
+					case <-ctx.Done():
+						return
+					}
+				}
+			} else {
+				// No AI configured: push each item directly as plain notification.
+				for _, item := range freshItems {
+					totalNew.Add(1)
+					s.notifier.Send(ctx, notify.Message{
+						Title:    item.SiteName + " 新增数据泄露",
+						Body:     item.Title,
+						Link:     item.Link,
+						SiteName: item.SiteName,
+						Kind:     notify.KindNormal,
+					})
+				}
+			}
+		}(src)
+	}
+
+	// Wait for all fetches to finish, then close the channel so workers
+	// know there is no more work coming this cycle.
+	fetchWg.Wait()
+	close(itemsCh)
+
+	// Wait for all analysis workers to finish processing the remaining items.
+	workerWg.Wait()
+
+	s.log.Info("poll cycle complete",
+		"new_items", totalNew.Load(),
+		"elapsed", time.Since(start).Round(time.Millisecond),
+	)
+
+	// ── Safety net: push any urgent items that somehow weren't notified ─────
 	if s.analyzer != nil {
 		s.pushPendingUrgent(ctx)
 	}
 
-	// ── Phase 4: 报告 ─────────────────────────────────────────────────────────
-	if s.cfg.DailyReport.Enabled {
+	// ── Reports: generate at most once per calendar day / week ──────────────
+	// Using Beijing time so reports align with the user's timezone.
+	now := beijingTime()
+	today := now.Format("2006-01-02")
+	_, isoWeek := now.ISOWeek()
+	thisWeek := fmt.Sprintf("%d-W%02d", now.Year(), isoWeek)
+
+	if s.cfg.DailyReport.Enabled && s.lastDailyDate != today {
 		s.generateDaily(ctx)
-	}
-	if s.cfg.WeeklyReport.Enabled && isWeeklyDay(s.cfg.WeeklyReport.PushDay) {
-		s.generateWeekly(ctx)
+		s.lastDailyDate = today
 	}
 
-	s.log.Info("poll cycle complete",
-		"new_items", len(allNew),
-		"total_elapsed", time.Since(start).Round(time.Millisecond),
-	)
+	if s.cfg.WeeklyReport.Enabled &&
+		isWeeklyDay(s.cfg.WeeklyReport.PushDay) &&
+		s.lastWeeklyDate != thisWeek {
+		s.generateWeekly(ctx)
+		s.lastWeeklyDate = thisWeek
+	}
+
 	return nil
 }
 
+// Run loops indefinitely, calling RunOnce at every cfg.Interval tick.
 func (s *Scheduler) Run(ctx context.Context) error {
+	// Build a startup summary so the user can verify config at a glance.
+	analyzerInfo := "规则引擎（无 LLM）"
+	if s.cfg.LLM.Enabled && s.cfg.LLM.APIKey != "" {
+		analyzerInfo = fmt.Sprintf("LLM ✅  provider=%s  model=%s",
+			s.cfg.LLM.Provider, s.cfg.LLM.Model)
+		if len(s.cfg.LLM.FallbackProviders) > 0 {
+			analyzerInfo += fmt.Sprintf("  fallbacks=%d", len(s.cfg.LLM.FallbackProviders))
+		}
+	} else if s.cfg.LLM.Enabled {
+		analyzerInfo = "LLM ⚠️  已启用但 API Key 为空，降级到规则引擎"
+	}
+
 	s.notifier.Send(ctx, notify.Message{
 		Title: "DarkWeb Forums Tracker 已启动",
-		Body:  "开始监控 DarkWeb 论坛数据泄露信息…",
-		Kind:  notify.KindStartup,
+		Body: fmt.Sprintf(
+			"轮询间隔: %s\n分析引擎: %s\n推送阈值: score≥%d\n帖子时效: %d 天内",
+			s.cfg.Interval,
+			analyzerInfo,
+			s.cfg.LLM.NotifyMinScore,
+			s.cfg.MaxItemAgeDays,
+		),
+		Kind: notify.KindStartup,
 	})
 
 	ticker := time.NewTicker(s.cfg.Interval)
 	defer ticker.Stop()
 
+	// Run immediately on startup, then on every tick.
 	if err := s.RunOnce(ctx); err != nil {
 		s.log.Error("initial run failed", "err", err)
 	}
@@ -134,64 +255,129 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1: 并行抓取所有源，返回全部新条目
+// Analysis worker
 // ---------------------------------------------------------------------------
 
-// fetchAllSources 并发抓取所有启用的 RSS 源，聚合去重后的新条目。
-// 各源之间完全并行，fetch 耗时取决于最慢的那个源，而不是所有源之和。
-func (s *Scheduler) fetchAllSources(ctx context.Context) []storage.Item {
-	type result struct {
-		items []storage.Item
-		err   error
-		name  string
+// analyzeWorker drains itemsCh, analyzes each item through the provider chain,
+// persists the result, and pushes a notification if score >= notify_min_score.
+// One goroutine per worker; all workers share the analyzer's rate limiter.
+func (s *Scheduler) analyzeWorker(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	items <-chan storage.Item,
+	total *atomic.Int64,
+) {
+	defer wg.Done()
+
+	minScore := s.cfg.LLM.NotifyMinScore
+	if minScore <= 0 {
+		minScore = 5
 	}
 
-	results := make(chan result, len(s.sources))
-	var wg sync.WaitGroup
+	for item := range items {
+		total.Add(1)
 
-	for _, ds := range s.sources {
-		wg.Add(1)
-		go func(src config.DataSource) {
-			defer wg.Done()
-			items, err := s.fetcher.Fetch(ctx, src)
-			results <- result{items: items, err: err, name: src.Name}
-		}(ds)
-	}
-
-	// 等所有 goroutine 完成后关闭 channel
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// 收集结果，去重入库
-	var allNew []storage.Item
-	sourceStats := make(map[string][2]int) // name → [total, new]
-
-	for r := range results {
-		if r.err != nil {
-			s.log.Warn("fetch failed", "source", r.name, "err", r.err)
+		// Fast title pre-filter — free, runs in microseconds.
+		// Skips combo lists, cracking tools, generic email dumps etc.
+		// Items with named victims/orgs always pass through.
+		fr := filter.QuickFilter(item.Title, item.SiteName)
+		if fr.Action == filter.ActionSkip {
+			s.log.Debug("title filter: skipped",
+				"title", truncate(item.Title, 80),
+				"reason", fr.Reason,
+			)
 			continue
 		}
 
-		newItems := s.insertNew(ctx, r.items)
-		sourceStats[r.name] = [2]int{len(r.items), len(newItems)}
-		allNew = append(allNew, newItems...)
-	}
+		// Analyze single item — goes through the full provider chain:
+		// primary LLM → fallback providers → rules engine (never fails).
+		results := s.analyzer.AnalyzeBatch(ctx, []analyzer.BatchItem{
+			{
+				ID:            item.ID,
+				Title:         item.Title,
+				Content:       item.Content,
+				SiteName:      item.SiteName,
+				PubDate:       item.PubDate,
+				Author:        item.Author,
+				DownloadLinks: item.DownloadLinks,
+			},
+		}, 1)
 
-	// 打印每个源的统计
-	for name, stats := range sourceStats {
-		s.log.Info("source fetched",
-			"source", name,
-			"total", stats[0],
-			"new", stats[1],
+		if len(results) == 0 {
+			s.log.Warn("analysis returned empty result", "id", item.ID)
+			continue
+		}
+		br := results[0]
+		if br.Err != nil {
+			s.log.Warn("analysis failed", "id", item.ID, "title", truncate(item.Title, 60), "err", br.Err)
+			continue
+		}
+		res := br.Result
+
+		// Persist to DB.
+		row := storage.AnalysisRow{
+			ItemID:           item.ID,
+			Score:            res.Score,
+			Category:         res.Category,
+			Tags:             res.Tags,
+			Summary:          res.Summary,
+			AffectedTargets:  res.AffectedTargets,
+			EstimatedRecords: res.EstimatedRecords,
+			DataTypes:        res.DataTypes,
+			IsUrgent:         res.IsUrgent,
+			ConfidenceLevel:  res.ConfidenceLevel,
+			Reasoning:        res.Reasoning,
+		}
+		if err := s.db.InsertAnalysis(ctx, item.ID, row, s.cfg.LLM.Model); err != nil {
+			s.log.Error("persist analysis failed", "id", item.ID, "err", err)
+			continue
+		}
+
+		s.log.Debug("analyzed",
+			"title", truncate(item.Title, 60),
+			"site", item.SiteName,
+			"score", res.Score,
+			"category", res.Category,
+			"urgent", res.IsUrgent,
 		)
-	}
 
-	return allNew
+		// Push immediately if above the configured threshold.
+		if res.Score < minScore {
+			continue
+		}
+
+		kind := notify.KindNormal
+		if res.IsUrgent {
+			kind = notify.KindUrgent
+			if err := s.db.MarkUrgentNotified(ctx, []int64{item.ID}); err != nil {
+				s.log.Error("mark urgent notified failed", "err", err)
+			}
+		}
+
+		s.notifier.Send(ctx, notify.Message{
+			Title:            fmt.Sprintf("[%s] %s", item.SiteName, item.Title),
+			Body:             res.Summary,
+			Link:             item.Link,
+			SiteName:         item.SiteName,
+			Kind:             kind,
+			Score:            res.Score,
+			Category:         res.Category,
+			Summary:          res.Summary,
+			AffectedTargets:  res.AffectedTargets,
+			DataTypes:        res.DataTypes,
+			EstimatedRecords: res.EstimatedRecords,
+			IsUrgent:         res.IsUrgent,
+			ConfidenceLevel:  res.ConfidenceLevel,
+		})
+	}
 }
 
-// insertNew 对一批条目做去重检查，把新条目写入 DB 并返回。
+// ---------------------------------------------------------------------------
+// Feed fetching & deduplication
+// ---------------------------------------------------------------------------
+
+// insertNew checks each item against the DB and inserts new ones.
+// Returns only the items that were actually inserted.
 func (s *Scheduler) insertNew(ctx context.Context, items []storage.Item) []storage.Item {
 	var newItems []storage.Item
 	for _, item := range items {
@@ -212,103 +398,40 @@ func (s *Scheduler) insertNew(ctx context.Context, items []storage.Item) []stora
 	return newItems
 }
 
-// ---------------------------------------------------------------------------
-// Phase 2: 一次性批量 AI 分析
-// ---------------------------------------------------------------------------
-
-func (s *Scheduler) batchAnalyzeAndNotify(ctx context.Context, items []storage.Item) {
-	// 过滤掉已分析过的条目
-	var batch []analyzer.BatchItem
-	itemByID := make(map[int64]storage.Item, len(items))
-
-	for _, it := range items {
-		if s.cfg.LLM.SkipAnalyzedItems {
-			if existing, _ := s.db.GetAnalysis(ctx, it.ID); existing != nil {
-				continue
-			}
-		}
-		batch = append(batch, analyzer.BatchItem{
-			ID:       it.ID,
-			Title:    it.Title,
-			Content:  it.Content,
-			SiteName: it.SiteName,
-		})
-		itemByID[it.ID] = it
+// freshItems filters newItems to only those whose pub_date is within
+// cfg.MaxItemAgeDays. Items without a parseable pub_date are kept (assume fresh).
+// Returns (fresh, staleCount).
+func (s *Scheduler) freshItems(items []storage.Item) (fresh []storage.Item, stale int) {
+	maxAge := s.cfg.MaxItemAgeDays
+	if maxAge <= 0 {
+		// Filter disabled — treat everything as fresh.
+		return items, 0
 	}
+	cutoff := time.Now().Add(-time.Duration(maxAge) * 24 * time.Hour)
 
-	if len(batch) == 0 {
-		return
-	}
-
-	s.log.Info("AI batch analysis start", "items", len(batch))
-	start := time.Now()
-
-	// 全部送进 worker pool，并发分析（受 rate limiter 控制速率）
-	results := s.analyzer.AnalyzeBatch(ctx, batch, s.cfg.LLM.Workers)
-
-	var urgentIDs []int64
-	success, failed := 0, 0
-
-	for _, br := range results {
-		if br.Err != nil {
-			s.log.Warn("analysis failed", "id", br.ID, "err", br.Err)
-			failed++
+	for _, item := range items {
+		if item.PubDate == "" {
+			// No date info from feed → assume fresh, include it.
+			fresh = append(fresh, item)
 			continue
 		}
-
-		item := itemByID[br.ID]
-		res := br.Result
-
-		// 持久化
-		row := storage.AnalysisRow{
-			ItemID:           br.ID,
-			Score:            res.Score,
-			Category:         res.Category,
-			Tags:             res.Tags,
-			Summary:          res.Summary,
-			AffectedTargets:  res.AffectedTargets,
-			EstimatedRecords: res.EstimatedRecords,
-			DataTypes:        res.DataTypes,
-			IsUrgent:         res.IsUrgent,
-			ConfidenceLevel:  res.ConfidenceLevel,
-			Reasoning:        res.Reasoning,
-		}
-		if err := s.db.InsertAnalysis(ctx, br.ID, row, s.cfg.LLM.Model); err != nil {
-			s.log.Error("persist analysis failed", "id", br.ID, "err", err)
+		t, err := time.Parse(time.RFC3339, item.PubDate)
+		if err != nil {
+			// Unparseable date → assume fresh.
+			fresh = append(fresh, item)
 			continue
 		}
-
-		success++
-		s.log.Debug("analyzed",
-			"title", truncate(item.Title, 60),
-			"score", res.Score,
-			"category", res.Category,
-			"urgent", res.IsUrgent,
-		)
-
-		// 紧急项收集，稍后统一推送
-		if res.IsUrgent {
-			urgentIDs = append(urgentIDs, br.ID)
-			s.sendUrgentAlert(ctx, item, res)
+		if t.After(cutoff) {
+			fresh = append(fresh, item)
+		} else {
+			stale++
 		}
 	}
-
-	s.log.Info("AI batch analysis done",
-		"success", success,
-		"failed", failed,
-		"urgent", len(urgentIDs),
-		"elapsed", time.Since(start).Round(time.Millisecond),
-	)
-
-	if len(urgentIDs) > 0 {
-		if err := s.db.MarkUrgentNotified(ctx, urgentIDs); err != nil {
-			s.log.Error("mark urgent notified failed", "err", err)
-		}
-	}
+	return fresh, stale
 }
 
 // ---------------------------------------------------------------------------
-// 紧急告警
+// Safety net: push urgent items that were analyzed but never notified
 // ---------------------------------------------------------------------------
 
 func (s *Scheduler) pushPendingUrgent(ctx context.Context) {
@@ -323,7 +446,22 @@ func (s *Scheduler) pushPendingUrgent(ctx context.Context) {
 	s.log.Info("pushing pending urgent items", "count", len(pending))
 	var ids []int64
 	for _, iwa := range pending {
-		s.sendUrgentAlert(ctx, iwa.Item, analysisRowToResult(iwa.Analysis))
+		res := analysisRowToResult(iwa.Analysis)
+		s.notifier.Send(ctx, notify.Message{
+			Title:            fmt.Sprintf("[%s] %s", iwa.Item.SiteName, iwa.Item.Title),
+			Body:             res.Summary,
+			Link:             iwa.Item.Link,
+			SiteName:         iwa.Item.SiteName,
+			Kind:             notify.KindUrgent,
+			Score:            res.Score,
+			Category:         res.Category,
+			Summary:          res.Summary,
+			AffectedTargets:  res.AffectedTargets,
+			DataTypes:        res.DataTypes,
+			EstimatedRecords: res.EstimatedRecords,
+			IsUrgent:         true,
+			ConfidenceLevel:  res.ConfidenceLevel,
+		})
 		ids = append(ids, iwa.Item.ID)
 	}
 	if err := s.db.MarkUrgentNotified(ctx, ids); err != nil {
@@ -331,29 +469,8 @@ func (s *Scheduler) pushPendingUrgent(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) sendUrgentAlert(ctx context.Context, item storage.Item, res *analyzer.AnalysisResult) {
-	body := fmt.Sprintf("⚠️ 评分: %d/10 | 类别: %s | 置信度: %s\n\n%s",
-		res.Score, res.Category, res.ConfidenceLevel, res.Summary)
-	if len(res.AffectedTargets) > 0 {
-		body += "\n🎯 影响目标: " + strings.Join(res.AffectedTargets, ", ")
-	}
-	if len(res.DataTypes) > 0 {
-		body += "\n📦 数据类型: " + strings.Join(res.DataTypes, ", ")
-	}
-	if res.EstimatedRecords > 0 {
-		body += fmt.Sprintf("\n📊 估计记录数: %d", res.EstimatedRecords)
-	}
-	s.notifier.Send(ctx, notify.Message{
-		Title:    fmt.Sprintf("🚨 紧急告警 [%s] %s", item.SiteName, item.Title),
-		Body:     body,
-		Link:     item.Link,
-		SiteName: item.SiteName,
-		Kind:     notify.KindUrgent,
-	})
-}
-
 // ---------------------------------------------------------------------------
-// 报告生成
+// Report generation
 // ---------------------------------------------------------------------------
 
 func (s *Scheduler) generateDaily(ctx context.Context) {
@@ -368,7 +485,6 @@ func (s *Scheduler) generateDaily(ctx context.Context) {
 		s.log.Error("daily rss failed", "err", err)
 	}
 
-	// 每次运行后刷新全量 index.html（覆盖 workflow 的旧版跳转页）
 	allResult, err := s.generator.AllTime(ctx)
 	if err != nil {
 		s.log.Error("all-time index.html failed", "err", err)
@@ -424,19 +540,19 @@ func (s *Scheduler) generateWeekly(ctx context.Context) {
 }
 
 // ---------------------------------------------------------------------------
-// 辅助函数
+// Helpers
 // ---------------------------------------------------------------------------
 
 func (s *Scheduler) isSleepTime() bool {
 	if !s.cfg.NightSleep.Enabled {
 		return false
 	}
-	bjHour := (time.Now().UTC().Hour() + 8) % 24
+	bjHour := beijingTime().Hour()
 	return bjHour >= s.cfg.NightSleep.StartHour && bjHour < s.cfg.NightSleep.EndHour
 }
 
 func isWeeklyDay(target time.Weekday) bool {
-	return time.Now().UTC().Add(8 * time.Hour).Weekday() == target
+	return beijingTime().Weekday() == target
 }
 
 func truncate(s string, n int) string {
