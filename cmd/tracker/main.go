@@ -8,13 +8,16 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/lmittmann/tint"
+	"golang.org/x/net/proxy"
 
 	"darkweb-tracker/internal/analyzer"
 	"darkweb-tracker/internal/config"
@@ -220,6 +223,27 @@ func runExport(ctx context.Context, db *storage.DB, log *slog.Logger,
 // ---------------------------------------------------------------------------
 
 func buildHTTPClient(proxyCfg config.ProxyConfig) *http.Client {
+	// Tor SOCKS5 takes highest priority
+	if proxyCfg.TorSOCKS != "" {
+		hostPort := proxyCfg.TorSOCKS
+		if u, err := url.Parse(proxyCfg.TorSOCKS); err == nil && u.Host != "" {
+			hostPort = u.Host
+		}
+		if dialer, err := proxy.SOCKS5("tcp", hostPort, nil, proxy.Direct); err == nil {
+			transport := &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return dialer.Dial(network, addr)
+				},
+				ResponseHeaderTimeout: 45 * time.Second,
+				TLSHandshakeTimeout:   20 * time.Second,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   10,
+				IdleConnTimeout:       90 * time.Second,
+			}
+			return &http.Client{Timeout: 60 * time.Second, Transport: transport}
+		}
+	}
+
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,

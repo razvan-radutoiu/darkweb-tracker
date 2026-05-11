@@ -3,12 +3,308 @@
 #
 # 触发：每小时整点自动运行 + 手动触发
 # 功能：
-#   1. 抓取所有 RSS 源（远程 sources.yaml 优先）
-#   2. AI 分析（使用 GitHub Models 内置 API，无需额外付费）
-#   3. 生成日报 / 周报 HTML
-#   4. 提交结果回 main 分支（仅在有新数据时提交，避免空提交）
-#   5. 部署 HTML 报告到 GitHub Pages
+#   1. 启动 Tor 匿名代理（SOCKS5 9050）
+#   2. 抓取所有 RSS 源（通过 Tor 匿名访问暗网论坛）
+#   3. AI 分析（使用 GitHub Models 内置 API，无需额外付费）
+#   4. 生成日报 / 周报 HTML
+#   5. 提交结果回 main 分支（仅在有新数据时提交，避免空提交）
+#   6. 部署 HTML 报告到 GitHub Pages
 # ─────────────────────────────────────────────────────────────────────────────
+
+name: DarkWeb Forums Tracker
+
+on:
+  schedule:
+    # 每小时整点运行（UTC），即北京时间每小时 :00
+    - cron: '0 * * * *'
+
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: '开启调试日志'
+        type: boolean
+        default: false
+      skip_ai:
+        description: '跳过 AI 分析（节省 API 配额）'
+        type: boolean
+        default: false
+      health_check:
+        description: '源健康检查'
+        type: boolean
+        default: true
+      skip_tor:
+        description: '跳过 Tor（调试用，直连抓取）'
+        type: boolean
+        default: false
+
+# 同一时间只允许一个实例运行，避免数据库冲突
+# cancel-in-progress: false 确保上一次跑完才允许下一次开始
+concurrency:
+  group: darkweb-tracker
+  cancel-in-progress: false   # 不取消正在运行的，等待完成
+
+permissions:
+  contents: write   # 提交结果回仓库
+  models: read      # 调用 GitHub Models AI API
+  pages: write      # 部署到 GitHub Pages
+  id-token: write   # GitHub Pages OIDC 部署必需
+
+jobs:
+  # ── 核心任务：抓取 + 分析 + 报告 ─────────────────────────────────────────
+  track:
+    name: 抓取 & 分析
+    runs-on: ubuntu-latest
+    # 每次运行必须在 25 分钟内完成，确保不超过 1 小时调度周期
+    timeout-minutes: 25
+
+    outputs:
+      has_changes: ${{ steps.commit.outputs.changes_detected }}
+      report_date: ${{ steps.run.outputs.report_date }}
+      has_reports: ${{ steps.check_reports.outputs.has_reports }}
+
+    steps:
+      # ── 1. 检出代码 ────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 必须 fetch 完整历史，否则 git push 可能冲突
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 2. 拉取最新数据（含上次运行写入的 db 和报告）─────────────────────
+      - name: 拉取最新数据（含上次运行的 db）
+        run: |
+          git pull --rebase origin main || echo "::warning::拉取失败，继续使用本地版本"
+
+      # ── 3. 安装并启动 Tor ──────────────────────────────────────────────────
+      - name: 安装并启动 Tor
+        if: ${{ inputs.skip_tor != true }}
+        run: |
+          sudo apt-get install -y -q tor
+
+          # 写入精简 torrc（禁用不需要的功能，加快启动）
+          sudo tee /etc/tor/torrc > /dev/null <<'TORRC'
+          SocksPort 9050
+          SocksPolicy accept 127.0.0.1
+          Log notice stderr
+          DataDirectory /var/lib/tor
+          MaxCircuitDirtiness 600
+          NewCircuitPeriod 30
+          NumEntryGuards 3
+          TORRC
+
+          sudo systemctl start tor
+
+          # 等待 Tor 完成握手（最长 60 秒），出现 "Bootstrapped 100%" 才继续
+          echo "⏳ 等待 Tor 网络就绪..."
+          for i in $(seq 1 60); do
+            if sudo journalctl -u tor --no-pager -n 20 2>/dev/null | grep -q "Bootstrapped 100%"; then
+              echo "✅ Tor 已就绪（${i}s）"
+              break
+            fi
+            sleep 1
+            if [ "$i" -eq 60 ]; then
+              echo "::warning::Tor 未能在 60 秒内完成启动，将尝试直连"
+            fi
+          done
+
+          # 验证 Tor 可用，打印出口 IP（与真实 IP 不同）
+          TOR_IP=$(curl -s --socks5-hostname 127.0.0.1:9050 https://api.ipify.org 2>/dev/null || echo "unknown")
+          REAL_IP=$(curl -s https://api.ipify.org 2>/dev/null || echo "unknown")
+          echo "🧅 Tor 出口 IP : ${TOR_IP}"
+          echo "📍 真实 IP     : ${REAL_IP}"
+          if [ "$TOR_IP" != "$REAL_IP" ] && [ "$TOR_IP" != "unknown" ]; then
+            echo "✅ Tor 匿名代理验证通过"
+          else
+            echo "::warning::Tor IP 未变化，代理可能未生效"
+          fi
+
+      # ── 4. 配置 Go 环境 ────────────────────────────────────────────────────
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true   # 自动缓存 go mod 依赖
+
+      # ── 5. 编译（带版本号） ─────────────────────────────────────────────────
+      - name: Build
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          go build \
+            -ldflags="-s -w -X main.Version=${VERSION}" \
+            -o tracker \
+            ./cmd/tracker
+          echo "Binary: $(./tracker --version)"
+
+      # ── 6. 运行主程序 ──────────────────────────────────────────────────────
+      - name: Run tracker
+        id: run
+        env:
+          # ══════════════════════════════════════════════════════════════════
+          # 设计原则：
+          #   workflow 只传 Secrets（无法写入 config.yaml 的敏感值）
+          #   所有业务配置（模型/速率/源/报告）统一在 config.yaml 管理
+          #   env 变量优先级 > config.yaml，所以这里只传必须的敏感项
+          # ══════════════════════════════════════════════════════════════════
+
+          # ── 必须通过 env 传递的：Secrets（不能写进 yaml）────────────────
+          LLM_API_KEY:       ${{ secrets.GITHUB_TOKEN }}   # GitHub Models 内置鉴权
+          DISCORD_WEBHOOK:   ${{ secrets.DISCORD_WEBHOOK }}
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+          DINGTALK_WEBHOOK:  ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET:   ${{ secrets.DINGTALK_SECRET }}
+          FEISHU_WEBHOOK:    ${{ secrets.FEISHU_WEBHOOK }}
+
+          # ── 渠道开关：根据 Secret 是否配置自动判断 ────────────────────
+          DISCORD_ENABLED:   ${{ secrets.DISCORD_WEBHOOK != '' && 'true' || 'false' }}
+          TELEGRAM_ENABLED:  ${{ secrets.TELEGRAM_TOKEN != '' && 'true' || 'false' }}
+          DINGTALK_ENABLED:  ${{ secrets.DINGTALK_WEBHOOK != '' && 'true' || 'false' }}
+          FEISHU_ENABLED:    ${{ secrets.FEISHU_WEBHOOK != '' && 'true' || 'false' }}
+
+          # ── Tor SOCKS5 代理（通过 Tor 匿名抓取所有源）────────────────
+          # skip_tor=true 时置空，程序自动退回直连
+          TOR_SOCKS: ${{ inputs.skip_tor == true && '' || 'socks5://127.0.0.1:9050' }}
+
+          # ── Actions 特有覆盖（与本地运行不同的行为）────────────────────
+          NIGHT_SLEEP_ENABLED: "false"   # Actions 已按时区调度，无需夜眠
+
+          # ── 手动触发时支持跳过 AI 分析 ──────────────────────────────────
+          LLM_ENABLED: ${{ inputs.skip_ai == true && 'false' || '' }}
+          # 注：LLM_ENABLED 留空时，以 config.yaml 中的 llm.enabled 为准
+
+        run: |
+          # 记录报告日期和时间戳，供提交信息使用
+          echo "report_date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "report_time=$(date +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_OUTPUT
+
+          ARGS="--once --config config.yaml --db data_leaks.db"
+          if [ "${{ inputs.debug }}" = "true" ]; then
+            ARGS="$ARGS --debug"
+          fi
+
+          echo "::group::Tracker 运行日志"
+          ./tracker $ARGS
+          echo "::endgroup::"
+
+      # ── 7. 关闭 Tor（释放资源）────────────────────────────────────────────
+      - name: 关闭 Tor
+        if: ${{ always() && inputs.skip_tor != true }}
+        run: sudo systemctl stop tor 2>/dev/null || true
+
+      # ── 8. 提交结果回仓库（仅在有实际变更时提交）──────────────────────────
+      # skip_dirty_check: false 保证工作区无变更时不产生空提交
+      # 每次提交带时间戳，区分同一天内的多次运行
+      - name: Commit 结果
+        id: commit
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: |
+            auto: 扫描更新 ${{ steps.run.outputs.report_time }} [skip ci]
+
+            - 抓取 DarkWeb 论坛 RSS（SQLite 按链接去重，不写入重复条目）
+            - 规则引擎评分 / AI 分析
+            - 生成日报 HTML
+          file_pattern: |
+            data_leaks.db
+            archive/**
+            rss/**
+            index.html
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          # false = 工作区无变更时跳过提交（避免空提交）
+          skip_dirty_check: false
+
+      # ── 9. 检查是否有报告可部署 ────────────────────────────────────────────
+      - name: 检查报告目录
+        id: check_reports
+        run: |
+          if [ -d "archive" ] && [ "$(ls -A archive 2>/dev/null)" ]; then
+            echo "has_reports=true" >> $GITHUB_OUTPUT
+            echo "✅ archive/ 有内容，将部署到 Pages"
+            ls archive/
+          else
+            echo "has_reports=false" >> $GITHUB_OUTPUT
+            echo "⚠️ archive/ 为空，跳过 Pages 部署（首次运行正常）"
+          fi
+
+      # ── 10. 准备部署目录（合并 index.html + archive/ + rss/）───────────────
+      - name: 准备 Pages 部署目录
+        if: steps.check_reports.outputs.has_reports == 'true'
+        run: |
+          mkdir -p _site
+          # 入口 index.html（根目录优先，不存在则生成跳转页）
+          if [ -f "index.html" ]; then
+            cp index.html _site/index.html
+          else
+            # 找最新日报作为跳转目标
+            LATEST=$(ls -1d archive/????-??-??/ 2>/dev/null | sort | tail -1)
+            LATEST_HTML=$(ls -1 ${LATEST}*.html 2>/dev/null | tail -1)
+            if [ -n "$LATEST_HTML" ]; then
+              TARGET="${LATEST_HTML#archive/}"
+              cat > _site/index.html << HTMLEOF
+          <!DOCTYPE html>
+          <html lang="zh-CN">
+          <head>
+            <meta charset="UTF-8">
+            <meta http-equiv="refresh" content="0; url=archive/${TARGET}">
+            <title>DarkWeb Forums Tracker</title>
+          </head>
+          <body>
+            <p>跳转中... <a href="archive/${TARGET}">点击此处</a></p>
+          </body>
+          </html>
+          HTMLEOF
+            else
+              echo "<html><body><p>首次运行后报告将显示在此处</p></body></html>" > _site/index.html
+            fi
+          fi
+          # 复制报告目录
+          [ -d archive ] && cp -r archive _site/archive
+          [ -d rss ]     && cp -r rss _site/rss
+          echo "📦 _site 目录内容："
+          ls _site/
+
+      # ── 11. 打包 HTML 报告供 Pages 部署 ────────────────────────────────────
+      - name: Upload Pages artifact
+        if: steps.check_reports.outputs.has_reports == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './_site'
+
+  # ── 部署 GitHub Pages ─────────────────────────────────────────────────────
+  deploy-pages:
+    name: 部署报告到 GitHub Pages
+    needs: track
+    # 只有 archive/ 有内容时才部署，避免首次运行空目录报错
+    if: needs.track.outputs.has_reports == 'true'
+
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+  # ── 清理旧 workflow 运行记录 ──────────────────────────────────────────────
+  cleanup:
+    name: 清理旧运行记录
+    needs: track
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 14
+          keep_minimum_runs: 10
 
 name: DarkWeb Forums Tracker
 

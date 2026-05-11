@@ -150,6 +150,7 @@ func (l *Loader) autoDiscoverAll(ctx context.Context) []config.DataSource {
 		{"adminlove520/rss_dataleak.yaml", l.discoverAdminloveYAML},
 		{"ransomware.live API", l.discoverRansomwareLive},
 		{"ransomwatch/posts.json", l.discoverRansomwatch},
+		{"ransomlook.io API", l.discoverRansomLook},
 		{"zer0yu/CyberSecurityRSS OPML", l.discoverCyberSecOPML},
 		{"direct security RSS feeds", l.discoverDirectFeeds},
 	}
@@ -503,10 +504,9 @@ func (l *Loader) discoverDirectFeeds(_ context.Context) []config.DataSource {
 		{Name: "DDoSecrets", RSSURL: "https://ddosecrets.substack.com/feed", Enabled: true},
 		// ransomfeed.it: ransomware victim tracker with actual data claims
 		{Name: "RansomFeed", RSSURL: "https://ransomfeed.it/rss.php", Enabled: true},
-
-		// ── Removed news blogs (no actual data, pure reporting noise) ───────
-		// BleepingComputer, KrebsOnSecurity, TroyHunt, ExploitDB, 0day.today,
-		// VulnDB — these are commentary/news, not data-bearing leak posts.
+		// TweetFeed: real-time IOC / breach links aggregated from security researchers
+		{Name: "TweetFeed-ransomware", RSSURL: "https://tweetfeed.live/rss/tag/ransomware.xml", Enabled: true},
+		{Name: "TweetFeed-breach", RSSURL: "https://tweetfeed.live/rss/tag/databreach.xml", Enabled: true},
 	}
 }
 
@@ -691,12 +691,59 @@ func sanitizeName(name string) string {
 }
 
 // ---------------------------------------------------------------------------
+// 8. ransomlook.io API — 570+ ransomware groups, real-time victims
+// ---------------------------------------------------------------------------
+
+const ransomLookRecentURL = "https://www.ransomlook.io/api/recent"
+const ransomLookSentinel = "internal://ransomlook.io/recent"
+
+type ransomLookPost struct {
+	PostTitle   string `json:"post_title"`
+	Discovered  string `json:"discovered"`
+	Description string `json:"description"`
+	Link        string `json:"link"`
+	GroupName   string `json:"group_name"`
+	Country     string `json:"country"`
+}
+
+func (l *Loader) discoverRansomLook(_ context.Context) []config.DataSource {
+	return []config.DataSource{{
+		Name:    "ransomlook",
+		RSSURL:  ransomLookSentinel,
+		Enabled: true,
+	}}
+}
+
+// FetchRansomLook retrieves recent victim posts from ransomlook.io API.
+func FetchRansomLook(ctx context.Context, client *http.Client) ([]ransomLookPost, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ransomLookRecentURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "darkweb-tracker/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ransomlook: HTTP %d", resp.StatusCode)
+	}
+	var posts []ransomLookPost
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&posts); err != nil {
+		return nil, err
+	}
+	return posts, nil
+}
+
+// ---------------------------------------------------------------------------
 // Sentinel URL constants (used by feed fetcher to detect special sources)
 // ---------------------------------------------------------------------------
 
 const (
 	SentinelRansomwareLive = ransomwareLiveSentinel
 	SentinelRansomwatch    = ransomwatchSentinel
+	SentinelRansomLook     = ransomLookSentinel
 )
 
 // ---------------------------------------------------------------------------

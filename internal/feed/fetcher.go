@@ -1,11 +1,13 @@
 // Package feed handles RSS/Atom feed fetching, parsing, and content cleaning.
 // Also handles special sentinel sources (ransomware.live API, ransomwatch JSON).
+// Supports HTTP proxy and Tor SOCKS5 proxy for anonymous fetching.
 package feed
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mmcdole/gofeed"
+	"golang.org/x/net/proxy"
 
 	"darkweb-tracker/internal/config"
 	"darkweb-tracker/internal/sources"
@@ -32,15 +35,9 @@ type Fetcher struct {
 	log        *slog.Logger
 }
 
-// New creates a Fetcher. If proxyCfg.Enabled, all requests go through the proxy.
+// New creates a Fetcher. Proxy priority: Tor SOCKS5 > HTTP proxy > direct.
 func New(proxyCfg config.ProxyConfig, log *slog.Logger) *Fetcher {
-	transport := &http.Transport{}
-
-	if proxyCfg.Enabled && proxyCfg.HTTP != "" {
-		// Set proxy via environment — gofeed uses http.DefaultTransport under the hood,
-		// so we inject our own transport.
-		transport = proxyTransport(proxyCfg)
-	}
+	transport := buildTransport(proxyCfg, log)
 
 	client := &http.Client{
 		Timeout:   30 * time.Second,
@@ -57,6 +54,53 @@ func New(proxyCfg config.ProxyConfig, log *slog.Logger) *Fetcher {
 	}
 }
 
+// buildTransport constructs an http.Transport with proxy settings applied.
+// Priority: Tor SOCKS5 > HTTP/HTTPS proxy > direct connection.
+func buildTransport(proxyCfg config.ProxyConfig, log *slog.Logger) *http.Transport {
+	// Tor SOCKS5 takes highest priority
+	if proxyCfg.TorSOCKS != "" {
+		dialer, err := torDialer(proxyCfg.TorSOCKS)
+		if err != nil {
+			if log != nil {
+				log.Warn("Tor SOCKS5 dialer failed, falling back to direct", "err", err)
+			}
+		} else {
+			if log != nil {
+				log.Info("proxy: Tor SOCKS5 active", "addr", proxyCfg.TorSOCKS)
+			}
+			return &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return dialer.Dial(network, addr)
+				},
+				// Keep reasonable timeouts even through Tor (Tor adds latency)
+				ResponseHeaderTimeout: 45 * time.Second,
+				TLSHandshakeTimeout:   20 * time.Second,
+			}
+		}
+	}
+
+	// Fall back to HTTP/HTTPS proxy
+	if proxyCfg.Enabled && proxyCfg.HTTP != "" {
+		if log != nil {
+			log.Info("proxy: HTTP proxy active", "addr", proxyCfg.HTTP)
+		}
+		return proxyTransport(proxyCfg)
+	}
+
+	return &http.Transport{}
+}
+
+// torDialer creates a SOCKS5 dialer for the given Tor address.
+// addr format: "socks5://127.0.0.1:9050" or "127.0.0.1:9050"
+func torDialer(addr string) (proxy.Dialer, error) {
+	// Strip scheme if present
+	hostPort := addr
+	if u, err := url.Parse(addr); err == nil && u.Host != "" {
+		hostPort = u.Host
+	}
+	return proxy.SOCKS5("tcp", hostPort, nil, proxy.Direct)
+}
+
 // Fetch retrieves and parses a single RSS source.
 // Handles both regular RSS/Atom feeds and special sentinel sources.
 func (f *Fetcher) Fetch(ctx context.Context, ds config.DataSource) ([]storage.Item, error) {
@@ -66,6 +110,8 @@ func (f *Fetcher) Fetch(ctx context.Context, ds config.DataSource) ([]storage.It
 		return f.fetchRansomwareLive(ctx, ds.Name)
 	case sources.SentinelRansomwatch:
 		return f.fetchRansomwatch(ctx, ds.Name)
+	case sources.SentinelRansomLook:
+		return f.fetchRansomLook(ctx, ds.Name)
 	}
 
 	// Standard RSS/Atom fetch
@@ -288,7 +334,45 @@ func (f *Fetcher) fetchRansomwareLive(ctx context.Context, siteName string) ([]s
 	return items, nil
 }
 
-// fetchRansomwatch fetches recent posts from the ransomwatch GitHub JSON.
+// fetchRansomLook fetches recent victim posts from ransomlook.io (570+ groups).
+func (f *Fetcher) fetchRansomLook(ctx context.Context, siteName string) ([]storage.Item, error) {
+	posts, err := sources.FetchRansomLook(ctx, f.httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("ransomlook: %w", err)
+	}
+
+	items := make([]storage.Item, 0, len(posts))
+	for _, p := range posts {
+		if p.PostTitle == "" || p.GroupName == "" {
+			continue
+		}
+		// Build a stable dedup link from group + title
+		link := p.Link
+		if link == "" {
+			link = fmt.Sprintf("https://www.ransomlook.io/group/%s#%s",
+				strings.ToLower(p.GroupName),
+				strings.ReplaceAll(strings.ToLower(p.PostTitle), " ", "-"),
+			)
+		}
+		title := fmt.Sprintf("[%s] %s", strings.ToUpper(p.GroupName), p.PostTitle)
+		content := p.Description
+		if p.Country != "" {
+			content = "[" + p.Country + "] " + content
+		}
+
+		items = append(items, storage.Item{
+			Title:    title,
+			Link:     link,
+			PubDate:  p.Discovered,
+			Category: "ransomware",
+			Content:  content,
+			SiteName: siteName,
+		})
+	}
+
+	f.log.Debug("ransomlook fetched", "posts", len(items))
+	return items, nil
+}
 func (f *Fetcher) fetchRansomwatch(ctx context.Context, siteName string) ([]storage.Item, error) {
 	// Only fetch posts from the last 30 days to avoid flooding the DB on first run.
 	const recentLimit = 200

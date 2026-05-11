@@ -140,6 +140,10 @@ type ProxyConfig struct {
 	HTTP     string `yaml:"http"`
 	HTTPS    string `yaml:"https"`
 	NoProxy  string `yaml:"no_proxy"`
+	// Tor SOCKS5 support
+	// If TorSOCKS is set (e.g. "socks5://127.0.0.1:9050"), all RSS fetches
+	// go through Tor. Takes precedence over HTTP/HTTPS proxy when set.
+	TorSOCKS string `yaml:"tor_socks"` // TOR_SOCKS env var
 }
 
 type NightSleepConfig struct {
@@ -341,6 +345,7 @@ func applyEnv(r *rawConfig) {
 	envStr("HTTP_PROXY", &r.Proxy.HTTP)
 	envStr("HTTPS_PROXY", &r.Proxy.HTTPS)
 	envStr("NO_PROXY", &r.Proxy.NoProxy)
+	envStr("TOR_SOCKS", &r.Proxy.TorSOCKS)
 
 	// Night sleep
 	envBool("NIGHT_SLEEP_ENABLED", &r.NightSleep.Enabled)
