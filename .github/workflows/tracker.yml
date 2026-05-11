@@ -1,6 +1,6 @@
 name: DarkWeb Forums Tracker
 
-on:
+"on":
   schedule:
     - cron: '0 * * * *'
 
