@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DarkWeb Tracker</title>
+<style>
+  :root{
+    --bg:#0a0c0f;--bg2:#0f1117;--bg3:#151820;
+    --border:#1e2330;--border2:#2a3040;
+    --green:#00ff88;--green2:#00cc66;--green3:#004422;
+    --red:#ff3355;--red2:#cc2244;
+    --yellow:#ffcc00;--orange:#ff8800;
+    --cyan:#00aaff;--cyan2:#0088cc;
+    --text:#c8d0e0;--text2:#6b7890;--text3:#8890a0;
+    --urgent:#ff3355;--high:#ff8800;--mid:#ffcc00;--low:#4466aa;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Courier New',monospace;font-size:13px;min-height:100vh;overflow-x:hidden}
+  ::-webkit-scrollbar{width:6px;height:6px}
+  ::-webkit-scrollbar-track{background:var(--bg)}
+  ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+
+  /* ─── LAYOUT ─── */
+  #app{display:flex;flex-direction:column;min-height:100vh}
+
+  /* ─── HEADER ─── */
+  header{
+    background:var(--bg2);border-bottom:1px solid var(--border);
+    padding:10px 20px;display:flex;align-items:center;justify-content:space-between;
+    position:sticky;top:0;z-index:100
+  }
+  .logo{
+    color:var(--green);font-size:15px;font-weight:bold;letter-spacing:2px;
+    text-transform:uppercase;display:flex;align-items:center;gap:8px
+  }
+  .logo::before{content:'▶';font-size:10px;animation:blink 1.2s step-end infinite}
+  @keyframes blink{50%{opacity:0}}
+  .logo span{color:var(--text2);font-size:11px;font-weight:normal;letter-spacing:0}
+  .header-right{display:flex;align-items:center;gap:12px}
+  .user-badge{
+    background:var(--bg3);border:1px solid var(--border2);
+    border-radius:4px;padding:4px 10px;font-size:11px;
+    color:var(--text2);display:flex;align-items:center;gap:6px
+  }
+  .user-badge img{width:20px;height:20px;border-radius:50%;object-fit:cover}
+  .btn{
+    background:transparent;border:1px solid var(--border2);color:var(--text2);
+    padding:5px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:11px;
+    transition:all .15s
+  }
+  .btn:hover{border-color:var(--green);color:var(--green)}
+  .btn-logout{border-color:var(--red2);color:var(--red)}
+  .btn-logout:hover{background:rgba(255,51,85,.1)}
+
+  /* ─── STATS BAR ─── */
+  .stats-bar{
+    background:var(--bg2);border-bottom:1px solid var(--border);
+    padding:12px 20px;display:flex;gap:16px;flex-wrap:wrap
+  }
+  .stat-card{
+    background:var(--bg3);border:1px solid var(--border);
+    border-radius:4px;padding:8px 16px;min-width:120px;
+    display:flex;flex-direction:column;gap:2px
+  }
+  .stat-label{color:var(--text2);font-size:10px;text-transform:uppercase;letter-spacing:1px}
+  .stat-value{color:var(--green);font-size:18px;font-weight:bold}
+  .stat-sub{color:var(--text3);font-size:10px}
+
+  /* source breakdown */
+  .source-chips{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .chip{
+    background:var(--bg3);border:1px solid var(--border);
+    border-radius:3px;padding:2px 8px;font-size:10px;color:var(--text2);cursor:pointer;
+    transition:all .15s
+  }
+  .chip:hover,.chip.active{border-color:var(--green);color:var(--green)}
+  .chip .cnt{color:var(--text3);margin-left:3px}
+
+  /* ─── TOOLBAR ─── */
+  .toolbar{
+    background:var(--bg2);border-bottom:1px solid var(--border);
+    padding:8px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap
+  }
+  .search-wrap{flex:1;min-width:180px;position:relative}
+  .search-wrap::before{
+    content:'⌕';position:absolute;left:10px;top:50%;transform:translateY(-50%);
+    color:var(--text2);font-size:15px;pointer-events:none
+  }
+  input[type=search]{
+    width:100%;background:var(--bg3);border:1px solid var(--border);
+    border-radius:4px;padding:6px 10px 6px 30px;color:var(--text);font-family:inherit;font-size:12px;
+    outline:none;transition:border-color .15s
+  }
+  input[type=search]:focus{border-color:var(--green)}
+  select{
+    background:var(--bg3);border:1px solid var(--border);color:var(--text);
+    padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;outline:none;cursor:pointer
+  }
+  select:focus{border-color:var(--green)}
+  .count-badge{color:var(--text2);font-size:11px;white-space:nowrap}
+
+  /* ─── TABLE ─── */
+  main{flex:1;padding:16px 20px}
+  .table-wrap{width:100%;overflow-x:auto}
+  table{width:100%;border-collapse:collapse;table-layout:fixed}
+  th{
+    background:var(--bg2);border:1px solid var(--border);
+    padding:7px 10px;text-align:left;color:var(--text2);font-size:10px;
+    text-transform:uppercase;letter-spacing:1px;white-space:nowrap;
+    user-select:none;cursor:pointer
+  }
+  th:hover{color:var(--green)}
+  td{
+    border:1px solid var(--border);padding:8px 10px;vertical-align:top;
+    font-size:12px;line-height:1.5
+  }
+  tr:hover td{background:rgba(0,255,136,.03)}
+
+  /* column widths */
+  th:nth-child(1),td:nth-child(1){width:52px;text-align:center}  /* score */
+  th:nth-child(2),td:nth-child(2){width:100px}                    /* site */
+  th:nth-child(3),td:nth-child(3){min-width:280px}                /* title */
+  th:nth-child(4),td:nth-child(4){width:110px}                    /* category */
+  th:nth-child(5),td:nth-child(5){width:130px}                    /* date */
+
+  /* score badge */
+  .score{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:30px;height:30px;border-radius:4px;font-weight:bold;font-size:13px;
+    border:1px solid currentColor
+  }
+  .score-10,.score-9{color:var(--urgent);background:rgba(255,51,85,.15)}
+  .score-8,.score-7{color:var(--high);background:rgba(255,136,0,.12)}
+  .score-6,.score-5{color:var(--yellow);background:rgba(255,204,0,.1)}
+  .score-4,.score-3,.score-2,.score-1,.score-0{color:var(--low);background:rgba(68,102,170,.12)}
+  .urgent-badge{
+    display:inline-block;background:rgba(255,51,85,.2);
+    border:1px solid var(--urgent);color:var(--urgent);
+    border-radius:3px;padding:1px 5px;font-size:9px;font-weight:bold;
+    letter-spacing:1px;vertical-align:middle;margin-left:4px
+  }
+  .site-tag{
+    display:inline-block;background:var(--green3);border:1px solid var(--green2);
+    color:var(--green);border-radius:3px;padding:2px 7px;font-size:10px;
+    max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer
+  }
+  .site-tag:hover{background:rgba(0,255,136,.12)}
+  .title-link{color:var(--cyan);text-decoration:none;display:block;margin-bottom:4px}
+  .title-link:hover{color:var(--green);text-decoration:underline}
+  .title-link.no-link{color:var(--text);cursor:default;text-decoration:none}
+  .summary{color:var(--text3);font-size:11px;line-height:1.4}
+  .cat-tag{
+    display:inline-block;background:rgba(0,170,255,.1);border:1px solid rgba(0,170,255,.3);
+    color:var(--cyan);border-radius:3px;padding:2px 6px;font-size:10px
+  }
+  .date{color:var(--text2);font-size:11px;white-space:nowrap}
+
+  /* ─── EMPTY / LOADER / LOAD-MORE ─── */
+  .loading-row td,.empty-row td{text-align:center;color:var(--text2);padding:32px;border-color:var(--border)}
+  .spinner{display:inline-block;animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .load-more-wrap{text-align:center;padding:16px;color:var(--text2);font-size:12px}
+  .load-more-wrap.loading{opacity:.5}
+
+  /* ─── LOGIN SCREEN ─── */
+  #login-screen{
+    display:none;flex-direction:column;align-items:center;justify-content:center;
+    min-height:100vh;gap:32px;padding:40px 20px;text-align:center
+  }
+  #login-screen.visible{display:flex}
+  .login-logo{font-size:36px;margin-bottom:0}
+  .login-title{color:var(--green);font-size:22px;font-weight:bold;letter-spacing:3px}
+  .login-subtitle{color:var(--text2);font-size:13px;max-width:420px;line-height:1.6}
+  .login-card{
+    background:var(--bg2);border:1px solid var(--border2);border-radius:8px;
+    padding:32px 40px;display:flex;flex-direction:column;align-items:center;gap:20px;
+    min-width:320px
+  }
+  .login-card h2{color:var(--text);font-size:15px;font-weight:normal}
+  .login-divider{color:var(--text2);font-size:11px}
+  .error-msg{
+    background:rgba(255,51,85,.1);border:1px solid rgba(255,51,85,.4);
+    color:var(--red);border-radius:4px;padding:8px 16px;font-size:12px
+  }
+  .channel-info{
+    color:var(--text3);font-size:11px;
+    background:var(--bg3);border:1px solid var(--border);border-radius:4px;
+    padding:6px 12px;display:flex;align-items:center;gap:6px
+  }
+  .channel-info .ch{color:var(--cyan)}
+  .access-denied{
+    background:rgba(255,51,85,.08);border:1px solid rgba(255,51,85,.3);
+    border-radius:6px;padding:20px 28px;text-align:center;max-width:380px
+  }
+  .access-denied h3{color:var(--red);margin-bottom:8px;font-size:16px}
+  .access-denied p{color:var(--text2);font-size:12px;line-height:1.6}
+  .btn-join{
+    display:inline-block;background:rgba(0,170,255,.15);border:1px solid rgba(0,170,255,.4);
+    color:var(--cyan);border-radius:4px;padding:8px 20px;font-size:12px;font-family:inherit;
+    text-decoration:none;margin-top:12px;transition:all .15s;cursor:pointer
+  }
+  .btn-join:hover{background:rgba(0,170,255,.28);border-color:var(--cyan)}
+
+  /* ─── DETAIL DRAWER ─── */
+  .drawer-overlay{
+    display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200
+  }
+  .drawer-overlay.open{display:block}
+  .drawer{
+    position:fixed;right:0;top:0;bottom:0;width:min(520px,100vw);
+    background:var(--bg2);border-left:1px solid var(--border2);
+    overflow-y:auto;z-index:201;padding:24px;
+    transform:translateX(100%);transition:transform .2s ease
+  }
+  .drawer-overlay.open .drawer{transform:none}
+  .drawer-close{float:right;cursor:pointer;color:var(--text2);font-size:18px;padding:0 0 12px 12px}
+  .drawer-close:hover{color:var(--red)}
+  .drawer h2{color:var(--green);font-size:14px;margin-bottom:16px;line-height:1.4;overflow-wrap:break-word}
+  .drawer-meta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}
+  .meta-kv{background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:4px 10px;font-size:11px}
+  .meta-kv span{color:var(--text2)}
+  .meta-kv strong{color:var(--text)}
+  .drawer-section{margin-bottom:16px}
+  .drawer-section h4{color:var(--text2);font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+  .drawer-section p{color:var(--text);font-size:12px;line-height:1.6}
+  .tags-list{display:flex;flex-wrap:wrap;gap:5px}
+  .tag{background:rgba(0,170,255,.1);border:1px solid rgba(0,170,255,.25);color:var(--cyan);border-radius:3px;padding:2px 8px;font-size:10px}
+  .drawer-link{
+    display:block;color:var(--cyan);font-size:11px;word-break:break-all;
+    margin-bottom:6px;text-decoration:none
+  }
+  .drawer-link:hover{color:var(--green)}
+
+  /* weekly chart */
+  .mini-chart{display:flex;align-items:flex-end;gap:6px;height:50px;margin-top:8px}
+  .chart-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px}
+  .chart-bar{
+    width:100%;background:var(--green3);border:1px solid var(--green2);border-radius:2px 2px 0 0;
+    min-height:2px;transition:height .3s ease;cursor:default
+  }
+  .chart-bar:hover{background:rgba(0,255,136,.25)}
+  .chart-label{color:var(--text2);font-size:9px}
+
+  /* responsive */
+  @media(max-width:640px){
+    th:nth-child(4),td:nth-child(4){display:none}
+    th:nth-child(5),td:nth-child(5){display:none}
+    main{padding:10px}
+    .stats-bar{gap:8px}
+    .stat-card{min-width:90px;padding:6px 10px}
+    .stat-value{font-size:15px}
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════ LOGIN SCREEN ═══════════════════════════ -->
+<div id="login-screen">
+  <div>
+    <div class="login-logo">🕸️</div>
+    <div class="login-title">DARKWEB TRACKER</div>
+  </div>
+  <div class="login-subtitle">
+    监控暗网论坛数据泄露 · AI 智能评分 · 实时告警<br>
+    需要验证 Telegram 频道成员资格后方可访问
+  </div>
+
+  <div id="error-box" style="display:none"></div>
+
+  <div id="channel-box" class="channel-info" style="display:none">
+    🔒 需要加入频道 <span class="ch" id="channel-display"></span> 才能访问
+  </div>
+
+  <div class="login-card">
+    <h2>使用 Telegram 登录</h2>
+    <!-- Telegram Login Widget injected here by JS -->
+    <div id="tg-widget-mount"></div>
+    <div class="login-divider">只有频道成员可以访问数据</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════ MAIN APP ════════════════════════════════ -->
+<div id="app" style="display:none">
+  <header>
+    <div class="logo">
+      DWT <span>/ DarkWeb Tracker</span>
+    </div>
+    <div class="header-right">
+      <div class="user-badge">
+        <img id="user-photo" src="" alt="" onerror="this.style.display='none'">
+        <span id="user-name"></span>
+      </div>
+      <a href="/logout" class="btn btn-logout">退出</a>
+    </div>
+  </header>
+
+  <div class="stats-bar" id="stats-bar">
+    <div class="stat-card">
+      <div class="stat-label">今日新增</div>
+      <div class="stat-value" id="stat-today">—</div>
+      <div class="stat-sub">条目</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">历史总计</div>
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-sub">条目</div>
+    </div>
+    <div class="stat-card" style="flex:1">
+      <div class="stat-label">按来源</div>
+      <div id="source-chips" class="source-chips" style="margin-top:4px"></div>
+    </div>
+    <div class="stat-card" style="min-width:200px">
+      <div class="stat-label">近 7 日趋势</div>
+      <div class="mini-chart" id="mini-chart"></div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="search-wrap">
+      <input type="search" id="search-input" placeholder="搜索标题 / 来源 / 分类…">
+    </div>
+    <select id="filter-site">
+      <option value="">全部来源</option>
+    </select>
+    <select id="filter-score">
+      <option value="">所有评分</option>
+      <option value="9">≥9 紧急</option>
+      <option value="7">≥7 高价值</option>
+      <option value="5">≥5 中等</option>
+    </select>
+    <span class="count-badge" id="count-label"></span>
+  </div>
+
+  <main>
+    <div class="table-wrap">
+      <table id="items-table">
+        <thead>
+          <tr>
+            <th title="AI评分">评分</th>
+            <th>来源</th>
+            <th>标题 / 摘要</th>
+            <th>分类</th>
+            <th>时间</th>
+          </tr>
+        </thead>
+        <tbody id="items-body">
+          <tr class="loading-row"><td colspan="5"><span class="spinner">⟳</span> 加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="load-more-wrap" id="load-more" style="display:none">
+      <button class="btn" id="load-more-btn">加载更多</button>
+    </div>
+  </main>
+</div>
+
+<!-- ════════════════════════════ DETAIL DRAWER ════════════════════════════ -->
+<div class="drawer-overlay" id="drawer-overlay">
+  <div class="drawer" id="drawer">
+    <span class="drawer-close" id="drawer-close">✕</span>
+    <h2 id="drawer-title"></h2>
+    <div class="drawer-meta" id="drawer-meta"></div>
+    <div class="drawer-section" id="drawer-summary-sec" style="display:none">
+      <h4>AI 摘要</h4>
+      <p id="drawer-summary"></p>
+    </div>
+    <div class="drawer-section" id="drawer-tags-sec" style="display:none">
+      <h4>标签</h4>
+      <div class="tags-list" id="drawer-tags"></div>
+    </div>
+    <div class="drawer-section" id="drawer-content-sec">
+      <h4>原始内容</h4>
+      <p id="drawer-content" style="font-size:11px;color:var(--text3);line-height:1.6;word-break:break-word;max-height:200px;overflow-y:auto"></p>
+    </div>
+    <div class="drawer-section" id="drawer-links-sec" style="display:none">
+      <h4>下载链接</h4>
+      <div id="drawer-links"></div>
+    </div>
+    <div class="drawer-section">
+      <h4>来源链接</h4>
+      <a class="drawer-link" id="drawer-link" href="#" target="_blank" rel="noopener"></a>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let allItems = [];       // loaded items
+  let cursor = 0;          // pagination cursor (unix ts)
+  let hasMore = false;
+  let loading = false;
+  let filterSite = '';
+  let filterScore = 0;
+  let searchQ = '';
+  let sources = {};
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  async function boot() {
+    const params = new URLSearchParams(location.search);
+    const errCode = params.get('error');
+
+    // Check session.
+    try {
+      const me = await api('/api/me');
+      showApp(me);
+      await Promise.all([loadStats(), loadItems(true)]);
+    } catch(e) {
+      showLogin(errCode);
+    }
+  }
+
+  // ── Login screen ──────────────────────────────────────────────────────────
+  async function showLogin(errCode) {
+    document.getElementById('app').style.display = 'none';
+    const ls = document.getElementById('login-screen');
+    ls.classList.add('visible');
+
+    const errBox = document.getElementById('error-box');
+
+    // Non-member errors need channel info before rendering — handled after config fetch.
+    if (errCode && errCode !== 'not_member') {
+      const msgs = {
+        auth_failed:            '❌ Telegram 认证失败，请重试',
+        membership_check_failed:'⚠️ 无法验证群组成员资格，请稍后重试',
+      };
+      errBox.className = 'error-msg';
+      errBox.textContent = msgs[errCode] || '登录失败: ' + errCode;
+      errBox.style.display = '';
+    }
+
+    // Inject Telegram Login Widget dynamically.
+    // The bot username comes from the config endpoint.
+    try {
+      const cfg = await api('/api/web-config').catch(()=>({}));
+      const botUser = cfg.bot_username || '';
+      const channelID = cfg.channel_id || '';
+
+      if (channelID) {
+          const displayName = cfg.channel_title || channelID;
+          const cb = document.getElementById('channel-box');
+          document.getElementById('channel-display').textContent = displayName;
+          cb.style.display = '';
+        }
+
+        // Render "not a member" error after we have the channel info.
+        if (errCode === 'not_member') {
+          const displayName = cfg.channel_title || channelID || '';
+          let joinBtn = '';
+          if (channelID) {
+            const tmeURL = channelID.startsWith('@')
+              ? 'https://t.me/' + encodeURIComponent(channelID.slice(1))
+              : null;
+            joinBtn = tmeURL
+              ? `<br><a class="btn-join" href="${tmeURL}" target="_blank" rel="noopener">👉 点击加入 ${esc(displayName || channelID)}</a>`
+              : `<br><span style="color:var(--cyan)">${esc(displayName || channelID)}</span>`;
+          }
+          errBox.className = 'access-denied';
+          errBox.innerHTML =
+            `<h3>⛔ 访问被拒绝</h3>` +
+            `<p>您尚未加入指定的 Telegram 群组，无法登录面板。` +
+            `${joinBtn}` +
+            `<br><br>加入群组后请重新点击登录按钮。</p>`;
+          errBox.style.display = '';
+        }
+
+      if (botUser) {
+          const script = document.createElement('script');
+          script.async = true;
+          script.src = 'https://telegram.org/js/telegram-widget.js?22';
+          script.setAttribute('data-telegram-login', botUser);
+          script.setAttribute('data-size', 'large');
+          script.setAttribute('data-auth-url', location.origin + '/auth/telegram');
+          script.setAttribute('data-request-access', 'write');
+          document.getElementById('tg-widget-mount').appendChild(script);
+        } else {
+          document.getElementById('tg-widget-mount').innerHTML = `
+            <div style="color:var(--yellow);font-size:12px;line-height:1.8;text-align:left;
+                        background:rgba(255,204,0,.08);border:1px solid rgba(255,204,0,.3);
+                        border-radius:4px;padding:12px 16px">
+              ⚠️ <strong>Bot 用户名未配置</strong><br>
+              请在 <code>config.yaml</code> 中设置：<br>
+              <code style="color:var(--green)">web.bot_username: "YourBotName"</code><br><br>
+              同时在 BotFather 执行：<br>
+              <code style="color:var(--cyan)">/setdomain → 选择 Bot → 填入域名</code>
+            </div>`;
+        }
+    } catch(_){}
+  }
+
+  function showApp(me) {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+    if (me.photo_url) document.getElementById('user-photo').src = me.photo_url;
+    document.getElementById('user-name').textContent =
+      (me.first_name || '') + (me.username ? ' (@'+me.username+')' : '');
+    // clean up URL params
+    if (location.search) history.replaceState(null,'',location.pathname);
+  }
+
+  // ── Stats ──────────────────────────────────────────────────────────────────
+  async function loadStats() {
+    const s = await api('/api/stats');
+    document.getElementById('stat-today').textContent = fmt(s.today_count);
+    document.getElementById('stat-total').textContent = fmt(s.total_count);
+
+    sources = s.by_source || {};
+    renderSourceChips(sources);
+    renderWeeklyChart(s.weekly || []);
+    populateSiteFilter(sources);
+  }
+
+  function renderSourceChips(src) {
+    const el = document.getElementById('source-chips');
+    el.innerHTML = '';
+    const chip0 = document.createElement('span');
+    chip0.className = 'chip' + (filterSite==='' ? ' active':'');
+    chip0.innerHTML = '全部';
+    chip0.onclick = ()=>{ filterSite=''; document.getElementById('filter-site').value=''; applyFilters(); renderSourceChips(src); };
+    el.appendChild(chip0);
+    Object.entries(src).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{
+      const c = document.createElement('span');
+      c.className = 'chip' + (filterSite===k ? ' active':'');
+      c.innerHTML = k + '<span class="cnt">'+v+'</span>';
+      c.onclick = ()=>{ filterSite=k; document.getElementById('filter-site').value=k; applyFilters(); renderSourceChips(src); };
+      el.appendChild(c);
+    });
+  }
+
+  function renderWeeklyChart(weekly) {
+    const el = document.getElementById('mini-chart');
+    el.innerHTML = '';
+    const max = Math.max(...weekly.map(d=>d.count), 1);
+    weekly.forEach(d=>{
+      const wrap = document.createElement('div');
+      wrap.className = 'chart-bar-wrap';
+      const pct = Math.max(4, Math.round((d.count/max)*46));
+      wrap.innerHTML =
+        `<div class="chart-bar" style="height:${pct}px" title="${d.date}: ${d.count}条"></div>
+         <div class="chart-label">${d.date}</div>`;
+      el.appendChild(wrap);
+    });
+  }
+
+  function populateSiteFilter(src) {
+    const sel = document.getElementById('filter-site');
+    while(sel.options.length > 1) sel.remove(1);
+    Object.keys(src).sort().forEach(k=>{
+      const o = new Option(k + ' ('+src[k]+')', k);
+      sel.appendChild(o);
+    });
+  }
+
+  // ── Items ──────────────────────────────────────────────────────────────────
+  async function loadItems(reset) {
+    if (loading) return;
+    loading = true;
+    if (reset) { allItems = []; cursor = 0; hasMore = false; }
+
+    const tbody = document.getElementById('items-body');
+    if (reset) tbody.innerHTML = '<tr class="loading-row"><td colspan="5"><span class="spinner">⟳</span> 加载中…</td></tr>';
+
+    try {
+      let url = '/api/items?limit=50';
+      if (cursor) url += '&before=' + cursor;
+      if (filterSite) url += '&site=' + encodeURIComponent(filterSite);
+
+      const data = await api(url);
+      if (reset) tbody.innerHTML = '';
+
+      data.items.forEach(item => {
+        allItems.push(item);
+        tbody.appendChild(buildRow(item));
+      });
+
+      cursor = data.cursor;
+      hasMore = data.has_more;
+      updateCountLabel();
+
+      const lmWrap = document.getElementById('load-more');
+      lmWrap.style.display = hasMore ? '' : 'none';
+
+      if (!data.items.length && reset) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="5">暂无数据</td></tr>';
+      }
+    } catch(e) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="5">加载失败: '+e.message+'</td></tr>';
+    } finally {
+      loading = false;
+    }
+  }
+
+  function buildRow(item) {
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.onclick = ()=>openDrawer(item);
+
+    const score = item.ai_score || 0;
+    const scoreClass = 'score score-' + Math.min(score, 10);
+    const urgentBadge = item.ai_urgent ? '<span class="urgent-badge">⚠ URGENT</span>' : '';
+
+    const title = esc(item.title || '(无标题)');
+    const summary = item.ai_summary ? `<div class="summary">${esc(item.ai_summary)}</div>` : '';
+
+    tr.innerHTML = `
+      <td><span class="${scoreClass}">${score||'—'}</span></td>
+      <td><span class="site-tag" title="${esc(item.site_name)}">${esc(item.site_name)}</span></td>
+      <td>
+        ${item.link
+          ? `<a class="title-link" href="${esc(item.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${title}</a>`
+          : `<span class="title-link no-link">${title}</span>`
+        }
+        ${urgentBadge}
+        ${summary}
+      </td>
+      <td>${item.ai_category ? `<span class="cat-tag">${esc(item.ai_category)}</span>` : ''}</td>
+      <td><span class="date">${fmtDate(item.created_at)}</span></td>
+    `;
+    return tr;
+  }
+
+  // ── Filtering (client-side on loaded items) ────────────────────────────────
+  function applyFilters() {
+    const q = searchQ.toLowerCase();
+    const scoreMin = filterScore;
+    const tbody = document.getElementById('items-body');
+    tbody.innerHTML = '';
+    let shown = 0;
+
+    allItems.forEach(item => {
+      if (filterSite && item.site_name !== filterSite) return;
+      if (scoreMin && (item.ai_score||0) < scoreMin) return;
+      if (q) {
+        const hay = (item.title+item.site_name+item.ai_category+item.ai_summary).toLowerCase();
+        if (!hay.includes(q)) return;
+      }
+      tbody.appendChild(buildRow(item));
+      shown++;
+    });
+
+    if (!shown) tbody.innerHTML = '<tr class="empty-row"><td colspan="5">没有匹配的结果</td></tr>';
+    document.getElementById('count-label').textContent = '显示 '+shown+' / '+allItems.length+' 条';
+  }
+
+  function updateCountLabel() {
+    document.getElementById('count-label').textContent = '已加载 ' + allItems.length + ' 条';
+  }
+
+  // ── Detail Drawer ─────────────────────────────────────────────────────────
+  function openDrawer(item) {
+    document.getElementById('drawer-title').textContent = item.title || '(无标题)';
+
+    // Meta badges.
+    const meta = document.getElementById('drawer-meta');
+    meta.innerHTML = '';
+    const addMeta = (k, v) => {
+      if(!v && v!==0) return;
+      const d = document.createElement('div');
+      d.className = 'meta-kv';
+      d.innerHTML = `<span>${k}: </span><strong>${esc(String(v))}</strong>`;
+      meta.appendChild(d);
+    };
+    addMeta('评分', item.ai_score || '—');
+    addMeta('来源', item.site_name);
+    addMeta('分类', item.ai_category);
+    if(item.ai_urgent) {
+      const b = document.createElement('div');
+      b.innerHTML = '<span class="urgent-badge">⚠ URGENT</span>';
+      meta.appendChild(b);
+    }
+
+    // Summary.
+    if (item.ai_summary) {
+      document.getElementById('drawer-summary').textContent = item.ai_summary;
+      document.getElementById('drawer-summary-sec').style.display = '';
+    } else {
+      document.getElementById('drawer-summary-sec').style.display = 'none';
+    }
+
+    // Content.
+    document.getElementById('drawer-content').textContent = item.content || '(无内容)';
+
+    // Download links.
+    const linksEl = document.getElementById('drawer-links');
+    linksEl.innerHTML = '';
+    if (item.download_links) {
+      item.download_links.split('\n').filter(Boolean).forEach(l => {
+        const a = document.createElement('a');
+        a.className = 'drawer-link';
+        a.href = l.trim();
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.textContent = l.trim();
+        linksEl.appendChild(a);
+      });
+      document.getElementById('drawer-links-sec').style.display = linksEl.children.length ? '' : 'none';
+    } else {
+      document.getElementById('drawer-links-sec').style.display = 'none';
+    }
+
+    // Source link.
+    const linkEl = document.getElementById('drawer-link');
+    linkEl.href = item.link || '#';
+    linkEl.textContent = item.link || '暂无链接';
+
+    document.getElementById('drawer-overlay').classList.add('open');
+  }
+
+  function closeDrawer() {
+    document.getElementById('drawer-overlay').classList.remove('open');
+  }
+
+  // ── API helper ─────────────────────────────────────────────────────────────
+  async function api(path) {
+    const r = await fetch(path, {credentials:'same-origin'});
+    if (r.status === 401) throw new Error('401');
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    return r.json();
+  }
+
+  // ── Utils ─────────────────────────────────────────────────────────────────
+  function esc(s){
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function fmt(n){ return n==null?'—':n.toLocaleString('zh-CN'); }
+  function fmtDate(iso){
+    if(!iso) return '—';
+    try{
+      const d=new Date(iso);
+      return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+    }catch(_){return iso.slice(0,16);}
+  }
+
+  // ── Event listeners ────────────────────────────────────────────────────────
+  document.getElementById('search-input').addEventListener('input', e=>{
+    searchQ = e.target.value;
+    applyFilters();
+  });
+  document.getElementById('filter-site').addEventListener('change', e=>{
+    filterSite = e.target.value;
+    renderSourceChips(sources);
+    // reload from server with site filter for fresh data
+    loadItems(true);
+  });
+  document.getElementById('filter-score').addEventListener('change', e=>{
+    filterScore = parseInt(e.target.value)||0;
+    applyFilters();
+  });
+  document.getElementById('load-more-btn').addEventListener('click', ()=>loadItems(false));
+  document.getElementById('drawer-close').addEventListener('click', closeDrawer);
+  document.getElementById('drawer-overlay').addEventListener('click', e=>{
+    if(e.target===document.getElementById('drawer-overlay')) closeDrawer();
+  });
+
+  // ── Go ─────────────────────────────────────────────────────────────────────
+  boot();
+})();
+</script>
+</body>
+</html>
