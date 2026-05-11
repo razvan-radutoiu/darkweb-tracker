@@ -113,24 +113,9 @@ func main() {
 	notifiers := buildNotifiers(cfg, httpClient, log)
 
 	// ── AI Analyzer ──────────────────────────────────────────────────────────
-	var az *analyzer.Analyzer
-	if cfg.LLM.Enabled {
-		if cfg.LLM.APIKey == "" {
-			log.Warn("LLM enabled but LLM_API_KEY is empty — disabling AI analysis")
-		} else {
-			az = analyzer.New(cfg.LLM, log)
-			log.Info("AI analyzer ready",
-				"provider", cfg.LLM.Provider,
-				"model", cfg.LLM.Model,
-				"rpm", cfg.LLM.RPM,
-				"workers", cfg.LLM.Workers,
-				"urgent_threshold", cfg.LLM.UrgentScoreThreshold,
-				"daily_top_n", cfg.LLM.DailyTopN,
-			)
-		}
-	} else {
-		log.Info("AI analysis disabled (set LLM_ENABLED=true to enable)")
-	}
+	// Build provider chain: primary (if configured) → fallbacks → rules engine.
+	// HybridAnalyzer tries each in order per item; rules engine never fails.
+	az := buildAnalyzer(cfg, log)
 
 	// ── Source loading (remote > local > builtin seeds) ──────────────────────
 	srcLoader := sources.New(cfg.Sources, httpClient, log)
@@ -290,4 +275,77 @@ func buildNotifiers(cfg *config.Config, client *http.Client, log *slog.Logger) *
 	}
 
 	return notify.NewMulti(log, ns...)
+}
+
+// buildAnalyzer constructs the analysis pipeline:
+//   primary LLM (if LLM_ENABLED + key set)
+//   → fallback providers (LLM_FALLBACK_1_*, LLM_FALLBACK_2_*, …)
+//   → RulesEngine (always last, zero cost, never fails)
+//
+// If no LLM is configured at all, only the RulesEngine runs.
+// The HybridAnalyzer tries each provider per item; on any error it moves
+// to the next provider automatically — no manual intervention needed.
+func buildAnalyzer(cfg *config.Config, log *slog.Logger) analyzer.ItemAnalyzer {
+	type entry = struct {
+		Name     string
+		Analyzer analyzer.ItemAnalyzer
+	}
+
+	var providers []entry
+
+	// Primary provider
+	if cfg.LLM.Enabled && cfg.LLM.APIKey != "" {
+		providers = append(providers, entry{
+			Name:     cfg.LLM.Provider,
+			Analyzer: analyzer.New(cfg.LLM, log),
+		})
+		log.Info("analyzer: primary provider ready",
+			"provider", cfg.LLM.Provider,
+			"model", cfg.LLM.Model,
+			"rpm", cfg.LLM.RPM,
+		)
+	} else if cfg.LLM.Enabled {
+		log.Warn("analyzer: LLM_ENABLED=true but API key empty — skipping primary LLM")
+	}
+
+	// Fallback providers from config
+	for _, fp := range cfg.LLM.FallbackProviders {
+		if fp.APIKey == "" || fp.BaseURL == "" {
+			continue
+		}
+		fbCfg := cfg.LLM // copy base settings (workers, thresholds, etc.)
+		fbCfg.Provider = fp.Name
+		fbCfg.BaseURL = fp.BaseURL
+		fbCfg.APIKey = fp.APIKey
+		fbCfg.Model = fp.Model
+		if fp.RPM > 0 {
+			fbCfg.RPM = fp.RPM
+			fbCfg.RPMBurst = max(1, fp.RPM/6)
+		}
+		providers = append(providers, entry{
+			Name:     fp.Name,
+			Analyzer: analyzer.New(fbCfg, log),
+		})
+		log.Info("analyzer: fallback provider registered",
+			"provider", fp.Name,
+			"model", fp.Model,
+			"rpm", fbCfg.RPM,
+		)
+	}
+
+	// Always append rules engine as the final fallback
+	providers = append(providers, entry{
+		Name:     "rules-engine",
+		Analyzer: analyzer.NewRulesEngine(log),
+	})
+
+	if len(providers) == 1 {
+		// Only rules engine — no LLM configured at all
+		cfg.LLM.Model = "rules-engine"
+		log.Info("analyzer: rules-based scoring active (no LLM configured)")
+		return providers[0].Analyzer
+	}
+
+	log.Info("analyzer: hybrid chain ready", "providers", len(providers))
+	return analyzer.NewHybridAnalyzer(log, providers...)
 }

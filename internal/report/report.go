@@ -379,12 +379,23 @@ th{background:var(--card);color:var(--fg);padding:10px 14px;border:1px solid var
    text-align:left;position:sticky;top:0;z-index:1;white-space:nowrap}
 td{padding:9px 14px;border:1px solid var(--border);vertical-align:top;line-height:1.5}
 td.num{color:#6b7280;text-align:right;white-space:nowrap;width:50px}
-td.src{white-space:nowrap;color:var(--fg);font-size:.8rem}
+td.src{white-space:nowrap;font-size:.8rem}
 td.time{white-space:nowrap;color:#6b7280;font-size:.8rem}
 td a{color:var(--fg2);text-decoration:none;word-break:break-all}
 td a:hover{color:var(--fg);text-decoration:underline}
 tr:hover td{background:var(--hover)}
 tr.hidden{display:none}
+/* Site tier badges */
+.badge{display:inline-block;padding:2px 7px;border-radius:3px;font-size:.72rem;font-weight:700;letter-spacing:.04em;white-space:nowrap}
+.t1{background:#7c0000;color:#ff6b6b;border:1px solid #ff4444}   /* TIER1: BreachForums etc */
+.t2{background:#4a3000;color:#ffa500;border:1px solid #ff8c00}   /* TIER2: high-value */
+.t3{background:#1a3a1a;color:#66cc66;border:1px solid #44aa44}   /* TIER3: carding */
+.t4{background:#1a2040;color:#7b9ef5;border:1px solid #4a6ed8}   /* TIER4: hacking */
+.t-ransom{background:#3d0050;color:#da70d6;border:1px solid #9932cc} /* Ransomware */
+.t-intel{background:#1a2a2a;color:#40e0d0;border:1px solid #20b2aa}  /* Intel/tracker */
+/* Content preview tooltip */
+td.title-cell{max-width:600px}
+.preview{display:block;font-size:.75rem;color:#6b7280;margin-top:3px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:580px}
 /* Pagination */
 .pagination{display:flex;gap:8px;justify-content:center;align-items:center;margin:16px 0;flex-wrap:wrap}
 .pagination button{background:var(--card);border:1px solid var(--border);color:var(--fg2);
@@ -411,7 +422,7 @@ footer{margin-top:40px;text-align:center;color:#6b7280;font-size:.8rem;border-to
 </div>
 
 <div class="toolbar">
-  <input type="text" id="search" placeholder="🔍 搜索标题..." oninput="filterTable()">
+  <input type="text" id="search" placeholder="🔍 搜索标题/内容..." oninput="filterTable()">
   <select id="src-filter" onchange="filterTable()">
     <option value="">全部来源</option>
     {{ range $src, $cnt := .BySource }}
@@ -423,13 +434,16 @@ footer{margin-top:40px;text-align:center;color:#6b7280;font-size:.8rem;border-to
 
 <div class="table-wrap">
 <table id="main-table">
-<thead><tr><th>#</th><th>标题</th><th>来源</th><th>发现时间</th></tr></thead>
+<thead><tr><th>#</th><th>标题 / 内容摘要</th><th>来源</th><th>发现时间</th></tr></thead>
 <tbody>
 {{ range $i, $it := .Items }}
-<tr data-src="{{ $it.SiteName }}" data-title="{{ $it.Title }}">
+<tr data-src="{{ $it.SiteName }}" data-title="{{ $it.Title }}" data-content="{{ $it.Content }}">
   <td class="num">{{ inc $i }}</td>
-  <td><a href="{{ $it.Link }}" target="_blank" rel="noopener noreferrer">{{ $it.Title }}</a></td>
-  <td class="src">{{ $it.SiteName }}</td>
+  <td class="title-cell">
+    <a href="{{ $it.Link }}" target="_blank" rel="noopener noreferrer">{{ $it.Title }}</a>
+    {{ if $it.Content }}<span class="preview">{{ truncate64 $it.Content }}</span>{{ end }}
+  </td>
+  <td class="src"><span class="badge {{ siteTier $it.SiteName }}">{{ $it.SiteName }}</span></td>
   <td class="time">{{ $it.CreatedAt.Format "01-02 15:04" }}</td>
 </tr>
 {{ end }}
@@ -454,8 +468,9 @@ function filterTable() {
   visibleRows = [];
   rows.forEach(r => {
     const title = r.dataset.title.toLowerCase();
+    const content = (r.dataset.content || '').toLowerCase();
     const rsrc  = r.dataset.src;
-    const show  = (!q || title.includes(q)) && (!src || rsrc === src);
+    const show  = (!q || title.includes(q) || content.includes(q)) && (!src || rsrc === src);
     r.classList.toggle('hidden', !show);
     if (show) visibleRows.push(r);
   });
@@ -476,7 +491,6 @@ function paginate() {
     r.style.display = (i >= start && i < end) ? '' : 'none';
   });
 
-  // Pagination buttons
   const pg = document.getElementById('pagination');
   pg.innerHTML = '';
   const btn = (label, page, disabled, active) => {
@@ -512,6 +526,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
 var tmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 	"inc": func(i int) int { return i + 1 },
+	// truncate64 returns up to 64 runes for the content preview line.
+	"truncate64": func(s string) string {
+		runes := []rune(s)
+		if len(runes) <= 64 {
+			return s
+		}
+		return string(runes[:64]) + "…"
+	},
+	// siteTier maps a site name to its CSS tier badge class.
+	"siteTier": func(name string) string {
+		n := strings.ToLower(name)
+		switch {
+		case strings.Contains(n, "breachforum"), strings.Contains(n, "leakbase"),
+			strings.Contains(n, "thejavasea"), strings.Contains(n, "exploit-in"),
+			strings.Contains(n, "xss-is"):
+			return "t1"
+		case strings.Contains(n, "probiv"), strings.Contains(n, "darkforum"),
+			strings.Contains(n, "altenens"), strings.Contains(n, "nulled"),
+			strings.Contains(n, "leakforum"), strings.Contains(n, "mipped"),
+			strings.Contains(n, "hard-tm"), strings.Contains(n, "dublikat"),
+			strings.Contains(n, "leetforum"), strings.Contains(n, "in4"),
+			strings.Contains(n, "ipbmafia"):
+			return "t2"
+		case strings.Contains(n, "card"), strings.Contains(n, "carding"),
+			strings.Contains(n, "mmgp"), strings.Contains(n, "ezcarder"):
+			return "t3"
+		case strings.Contains(n, "ransom"), strings.Contains(n, "ransomware"):
+			return "t-ransom"
+		case strings.Contains(n, "hibp"), strings.Contains(n, "haveibeen"),
+			strings.Contains(n, "ddosecret"), strings.Contains(n, "ransomfeed"),
+			strings.Contains(n, "ransomwatch"):
+			return "t-intel"
+		default:
+			return "t4"
+		}
+	},
 }).Parse(htmlTmpl))
 
 func (g *Generator) renderHTML(path string, data reportData) error {

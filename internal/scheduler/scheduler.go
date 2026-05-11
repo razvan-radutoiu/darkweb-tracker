@@ -25,7 +25,7 @@ type Scheduler struct {
 	db        *storage.DB
 	notifier  *notify.Multi
 	generator *report.Generator
-	analyzer  *analyzer.Analyzer // nil when LLM is disabled
+	analyzer  analyzer.ItemAnalyzer // nil when no analyzer configured
 	log       *slog.Logger
 }
 
@@ -36,7 +36,7 @@ func New(
 	db *storage.DB,
 	notifier *notify.Multi,
 	gen *report.Generator,
-	az *analyzer.Analyzer,
+	az analyzer.ItemAnalyzer,
 	log *slog.Logger,
 ) *Scheduler {
 	return &Scheduler{
@@ -66,7 +66,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 
 	// ── Phase 2: 一次性批量 AI 分析 ──────────────────────────────────────────
 	if len(allNew) > 0 {
-		if s.analyzer != nil && s.cfg.LLM.Enabled {
+		if s.analyzer != nil {
 			s.batchAnalyzeAndNotify(ctx, allNew)
 		} else {
 			// 无 AI：直接推送每条新数据
@@ -83,7 +83,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	}
 
 	// ── Phase 3: 补推遗漏的紧急项 ────────────────────────────────────────────
-	if s.analyzer != nil && s.cfg.LLM.Enabled {
+	if s.analyzer != nil {
 		s.pushPendingUrgent(ctx)
 	}
 
@@ -369,7 +369,7 @@ func (s *Scheduler) generateDaily(ctx context.Context) {
 	}
 
 	body := fmt.Sprintf("共收集到 %d 条数据泄露相关信息", result.TotalCount)
-	if s.analyzer != nil && s.cfg.LLM.Enabled {
+	if s.analyzer != nil {
 		body += s.buildTopNSummary(ctx)
 	}
 	s.notifier.Send(ctx, notify.Message{
