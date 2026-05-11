@@ -26,6 +26,45 @@ type Config struct {
 	Interval     time.Duration         `yaml:"interval"`
 	LLM          LLMConfig             `yaml:"llm"`
 	Sources      SourcesConfig         `yaml:"sources"`
+	Web          WebConfig             `yaml:"web"`
+
+	// MaxItemAgeDays is the maximum age of a post's pub_date (in days) for it
+	// to be eligible for AI analysis and push notifications.
+	// Posts older than this are inserted to DB (for deduplication) but are
+	// silently skipped — no analysis, no push.
+	// Default: 7. Set to 0 to disable the filter (push all new items).
+	MaxItemAgeDays int `yaml:"max_item_age_days"` // MAX_ITEM_AGE_DAYS
+}
+
+// WebConfig controls the built-in HTTP web interface.
+// It uses the Telegram Login Widget for authentication and verifies
+// that the user is a member of the configured Telegram channel.
+type WebConfig struct {
+	// Enabled turns the web server on/off. Default false.
+	Enabled bool `yaml:"enabled"` // WEB_ENABLED
+
+	// Port is the TCP port to listen on. Default 8080.
+	Port int `yaml:"port"` // WEB_PORT
+
+	// BotToken is the Telegram Bot token used to validate login and check
+	// channel membership. Can be the same token as Push.Telegram.Token.
+	BotToken string `yaml:"bot_token"` // WEB_BOT_TOKEN
+
+	// BotUsername is the bot's @username WITHOUT the leading '@'.
+	// Required for the Telegram Login Widget.
+	BotUsername string `yaml:"bot_username"` // WEB_BOT_USERNAME
+
+	// ChannelID is the channel @username (e.g. "@mychannel") or numeric ID
+	// (e.g. "-1001234567890") whose membership grants access.
+	ChannelID string `yaml:"channel_id"` // WEB_CHANNEL_ID
+
+	// ChannelTitle is an optional human-readable display name shown on the login page.
+	// If empty, the server will fetch it automatically via the Telegram getChat API.
+	ChannelTitle string `yaml:"channel_title"` // WEB_CHANNEL_TITLE
+
+	// SessionSecret is used to sign session cookies. Set to a random string.
+	// If empty, a random secret is generated on startup (sessions lost on restart).
+	SessionSecret string `yaml:"session_secret"` // WEB_SESSION_SECRET
 }
 
 // SourcesConfig controls how RSS feed source lists are loaded.
@@ -80,6 +119,16 @@ type LLMConfig struct {
 
 	// UrgentScoreThreshold is the minimum score to trigger an immediate push. Default 8.
 	UrgentScoreThreshold int `yaml:"urgent_score_threshold"` // LLM_URGENT_THRESHOLD
+
+	// NotifyMinScore is the minimum score for any analyzed item to be pushed
+	// immediately. Items below this score are only included in the daily report.
+	// Default 5. Set to 0 to push everything, 10 to push only critical.
+	NotifyMinScore int `yaml:"notify_min_score"` // LLM_NOTIFY_MIN_SCORE
+
+	// MaxInputChars limits the number of post-body characters sent to the LLM.
+	// Default 0 = no limit; full content is sent and the provider handles context.
+	// Set e.g. 30000 only if a specific provider rejects oversized requests.
+	MaxInputChars int `yaml:"max_input_chars"` // LLM_MAX_INPUT_CHARS
 
 	// DailyTopN is how many top-scored items to include in daily reports. Default 20.
 	DailyTopN int `yaml:"daily_top_n"` // LLM_DAILY_TOP_N
@@ -198,6 +247,8 @@ type rawConfig struct {
 	Interval     string                `yaml:"interval"`
 	LLM          LLMConfig             `yaml:"llm"`
 	Sources      SourcesConfig         `yaml:"sources"`
+	Web          WebConfig             `yaml:"web"`
+	MaxItemAgeDays int                 `yaml:"max_item_age_days"`
 }
 
 // DingTalk returns the DingTalk config (stored separately from PushConfig).
@@ -229,13 +280,15 @@ func Load(path string) (*Config, error) {
 			Telegram: raw.Push.Telegram,
 			Discord:  raw.Push.Discord,
 		},
-		Proxy:        raw.Proxy,
-		NightSleep:   raw.NightSleep,
-		DailyReport:  raw.DailyReport,
-		WeeklyReport: raw.WeeklyReport,
-		DataSources:  raw.DataSources,
-		LLM:          raw.LLM,
-		Sources:      raw.Sources,
+		Proxy:          raw.Proxy,
+		NightSleep:     raw.NightSleep,
+		DailyReport:    raw.DailyReport,
+		WeeklyReport:   raw.WeeklyReport,
+		DataSources:    raw.DataSources,
+		LLM:            raw.LLM,
+		Sources:        raw.Sources,
+		Web:            raw.Web,
+		MaxItemAgeDays: raw.MaxItemAgeDays,
 	}
 
 	// Apply LLM defaults.
@@ -253,6 +306,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.LLM.UrgentScoreThreshold == 0 {
 		cfg.LLM.UrgentScoreThreshold = 8
+	}
+	if cfg.LLM.NotifyMinScore == 0 {
+		cfg.LLM.NotifyMinScore = 5
 	}
 	if cfg.LLM.DailyTopN == 0 {
 		cfg.LLM.DailyTopN = 20
@@ -275,6 +331,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Interval == 0 {
 		cfg.Interval = 2 * time.Hour
+	}
+	if cfg.MaxItemAgeDays == 0 {
+		cfg.MaxItemAgeDays = 7 // default: only analyze/push posts from last 7 days
 	}
 
 	// Validate data sources have required fields.
@@ -311,6 +370,9 @@ func defaultRawConfig() rawConfig {
 			},
 		},
 		Interval: "2h",
+		Web: WebConfig{
+			Port: 8080,
+		},
 	}
 }
 
@@ -380,6 +442,8 @@ func applyEnv(r *rawConfig) {
 	envInt("LLM_RPM_BURST", &r.LLM.RPMBurst)
 	envInt("LLM_WORKERS", &r.LLM.Workers)
 	envInt("LLM_URGENT_THRESHOLD", &r.LLM.UrgentScoreThreshold)
+	envInt("LLM_NOTIFY_MIN_SCORE", &r.LLM.NotifyMinScore)
+	envInt("LLM_MAX_INPUT_CHARS", &r.LLM.MaxInputChars)
 	envInt("LLM_DAILY_TOP_N", &r.LLM.DailyTopN)
 	envBool("LLM_SKIP_ANALYZED", &r.LLM.SkipAnalyzedItems)
 
@@ -421,6 +485,18 @@ func applyEnv(r *rawConfig) {
 	envBool("SOURCES_HEALTH_CHECK", &r.Sources.HealthCheck)
 	envBool("SOURCES_NO_SEEDS", &r.Sources.DisableBuiltinSeeds)
 	envBool("SOURCES_NO_AUTODISCOVER", &r.Sources.DisableAutoDiscover)
+
+	// Web server
+	envBool("WEB_ENABLED", &r.Web.Enabled)
+	envInt("WEB_PORT", &r.Web.Port)
+	envStr("WEB_BOT_TOKEN", &r.Web.BotToken)
+	envStr("WEB_BOT_USERNAME", &r.Web.BotUsername)
+	envStr("WEB_CHANNEL_ID", &r.Web.ChannelID)
+	envStr("WEB_CHANNEL_TITLE", &r.Web.ChannelTitle)
+	envStr("WEB_SESSION_SECRET", &r.Web.SessionSecret)
+
+	// Feed age filter
+	envInt("MAX_ITEM_AGE_DAYS", &r.MaxItemAgeDays)
 }
 
 // ---------------------------------------------------------------------------

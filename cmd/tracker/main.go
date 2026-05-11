@@ -27,6 +27,7 @@ import (
 	"darkweb-tracker/internal/scheduler"
 	"darkweb-tracker/internal/sources"
 	"darkweb-tracker/internal/storage"
+	"darkweb-tracker/internal/web"
 )
 
 const banner = `
@@ -112,16 +113,19 @@ func main() {
 	// ── HTTP client ──────────────────────────────────────────────────────────
 	httpClient := buildHTTPClient(cfg.Proxy)
 
+	// Source discovery fetches GitHub raw files and probes clearnet forum URLs.
+	// These do NOT need Tor — using a direct client is 10-100× faster and
+	// prevents the discovery phase from blocking startup for minutes.
+	directClient := &http.Client{Timeout: 20 * time.Second}
+
 	// ── Notifiers ────────────────────────────────────────────────────────────
 	notifiers := buildNotifiers(cfg, httpClient, log)
 
 	// ── AI Analyzer ──────────────────────────────────────────────────────────
-	// Build provider chain: primary (if configured) → fallbacks → rules engine.
-	// HybridAnalyzer tries each in order per item; rules engine never fails.
 	az := buildAnalyzer(cfg, log)
 
 	// ── Source loading (remote > local > builtin seeds) ──────────────────────
-	srcLoader := sources.New(cfg.Sources, httpClient, log)
+	srcLoader := sources.New(cfg.Sources, directClient, log)
 	activeSources, err := srcLoader.Load(ctx, cfg.DataSources)
 	if err != nil {
 		log.Error("source loading failed", "err", err)
@@ -144,6 +148,20 @@ func main() {
 	runCtx, cancel := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Start web server if enabled (runs in a separate goroutine).
+	if cfg.Web.Enabled {
+		if cfg.Web.BotToken == "" {
+			log.Warn("web: WEB_BOT_TOKEN not set — web server disabled")
+		} else {
+			webSrv := web.New(cfg.Web, db, httpClient, log)
+			go func() {
+				if err := webSrv.Start(runCtx); err != nil {
+					log.Error("web server exited", "err", err)
+				}
+			}()
+		}
+	}
 
 	if *once {
 		log.Info("running single poll cycle (--once)")
@@ -323,13 +341,24 @@ func buildAnalyzer(cfg *config.Config, log *slog.Logger) analyzer.ItemAnalyzer {
 			Name:     cfg.LLM.Provider,
 			Analyzer: analyzer.New(cfg.LLM, log),
 		})
-		log.Info("analyzer: primary provider ready",
+		log.Info("analyzer: ✅ LLM primary provider ready",
 			"provider", cfg.LLM.Provider,
 			"model", cfg.LLM.Model,
+			"base_url", func() string {
+				if cfg.LLM.BaseURL == "" {
+					return "https://api.openai.com (default)"
+				}
+				return cfg.LLM.BaseURL
+			}(),
 			"rpm", cfg.LLM.RPM,
+			"notify_min_score", cfg.LLM.NotifyMinScore,
 		)
 	} else if cfg.LLM.Enabled {
-		log.Warn("analyzer: LLM_ENABLED=true but API key empty — skipping primary LLM")
+		log.Warn("analyzer: ⚠️  LLM enabled but api_key is empty — falling back to rules engine only",
+			"hint", "set llm.api_key in config.yaml or LLM_API_KEY env var")
+	} else {
+		log.Info("analyzer: ℹ️  LLM disabled — using rules engine only",
+			"hint", "set llm.enabled=true and llm.api_key to activate AI analysis")
 	}
 
 	// Fallback providers from config

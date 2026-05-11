@@ -79,8 +79,12 @@ func (l *Loader) Load(ctx context.Context, localSources map[string]config.DataSo
 	}
 
 	// Step 2: Auto-discovery from all GitHub sources (parallel)
+	// A fixed deadline prevents slow probres (e.g. dead forum domains) from
+	// blocking startup indefinitely. 60s is generous for direct connections.
 	if !l.cfg.DisableAutoDiscover {
-		discovered := l.autoDiscoverAll(ctx)
+		discoverCtx, discoverCancel := context.WithTimeout(ctx, 60*time.Second)
+		discovered := l.autoDiscoverAll(discoverCtx)
+		discoverCancel()
 		l.log.Info("auto-discovery complete", "found", len(discovered))
 		for _, ds := range discovered {
 			key := normalizeKey(ds.Name)
@@ -466,11 +470,14 @@ func FetchRansomwatchPosts(ctx context.Context, client *http.Client, limit int) 
 
 const cyberSecOPMLURL = "https://raw.githubusercontent.com/zer0yu/CyberSecurityRSS/master/CyberSecurityRSS.opml"
 
-// Keywords to filter relevant feeds from the 1000+ OPML list
+// Keywords to filter relevant feeds from the 1000+ OPML list.
+// Deliberately narrow — broad terms like "malware" or "infosec" pull in
+// security news sites (infosecurity-magazine, bleepingcomputer, etc.) that
+// publish analysis articles rather than actual breach data.
 var leakKeywords = []string{
-	"breach", "leak", "dark", "ransomware", "malware", "threat", "intel",
-	"security news", "vulnerability", "exploit", "hacking", "underground",
-	"incident", "cybercrime", "infosec",
+	"breach", "data leak", "data breach", "leaked", "darkweb", "dark web",
+	"ransomware", "underground forum", "haveibeenpwned", "data dump",
+	"cybercrime", "credential", "infostealer",
 }
 
 type opmlOutline struct {
@@ -594,7 +601,7 @@ func (l *Loader) probeRSS(ctx context.Context, baseURL string) string {
 }
 
 func (l *Loader) isValidRSS(ctx context.Context, url string) bool {
-	reqCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
