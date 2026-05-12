@@ -2,7 +2,7 @@
 
 > 监控 DarkWeb 论坛数据泄露，AI 自动评分，多渠道实时推送。
 
-纯 Go 实现，单文件二进制，无需 Python/Node 运行时。支持 OpenAI / DeepSeek / Ollama 等任意 LLM，RSS 源通过远程 YAML 动态管理，域名迁移无需重新部署。
+纯 Go 实现，单文件二进制，无需 Python/Node 运行时。支持 OpenAI / DeepSeek / Ollama 等任意 LLM，RSS 源和过滤规则均通过外置 YAML 动态管理，迭代规则无需重新编译。
 
 ---
 
@@ -20,6 +20,8 @@
   - [工作流文件说明](#工作流文件说明)
 - [配置](#配置)
   - [RSS 源管理](#rss-源管理)
+  - [过滤规则（filter_rules.yaml）](#过滤规则filter_rulesyaml)
+  - [正文全文抓取](#正文全文抓取)
   - [AI 分析](#ai-分析)
   - [推送渠道](#推送渠道)
   - [代理](#代理)
@@ -41,12 +43,12 @@
 **最简体验（无需任何配置）：**
 
 ```bash
-git clone https://github.com/your-username/darkweb-tracker
+git clone https://github.com/bambooqj/darkweb-tracker
 cd darkweb-tracker
 go run ./cmd/tracker --once
 ```
 
-程序会使用内置 seed 列表，自动做健康检查过滤死链，把新条目写入本地 `data_leaks.db`，生成日报到 `archive/` 目录。不配置推送渠道时静默运行，查看 `archive/` 下的 HTML 日报即可。
+程序会使用内置 seed 列表，把新条目写入本地 `data_leaks.db`，生成日报到 `archive/` 目录。不配置推送渠道时静默运行，查看 `archive/` 下的 HTML 日报即可。
 
 **加上 AI 分析和 Discord 推送：**
 
@@ -60,6 +62,13 @@ export LLM_MODEL="gpt-4o-mini"
 go run ./cmd/tracker --once
 ```
 
+**开启正文全文抓取（大幅提升 AI 分析质量）：**
+
+```bash
+export FETCH_FULL_CONTENT=true
+go run ./cmd/tracker --once
+```
+
 ---
 
 ## 工作原理
@@ -69,34 +78,47 @@ go run ./cmd/tracker --once
 │
 ├─ 1. 加载 RSS 源
 │      远程 sources.yaml → 本地 config.yaml → 内置 seed
-│      → HEAD 健康检查，自动过滤无法访问的域名
+│      → 自动探活，过滤无响应域名
 │
 ├─ 2. 抓取 & 去重
 │      feedparser 解析 RSS/Atom → 与 SQLite 比对链接
-│      新条目写入 items 表
+│      新条目写入 items 表（content = RSS teaser）
 │
-├─ 3. AI 分析（可选）
+├─ 3. 正文抓取（可选，FETCH_FULL_CONTENT=true）
+│      GET 帖子链接 → go-readability 提取主体 → html-to-markdown
+│      → 写入 items.full_content（Markdown 格式）
+│
+├─ 4. 标题预过滤（filter_rules.yaml 驱动）
+│      命中 named_targets → 强制进入分析
+│      命中 skip_patterns → 存 DB 但跳过分析和推送
+│
+├─ 5. AI 分析（可选）
 │      Worker Pool 并发调用 LLM（OpenAI-wire 协议）
+│      优先使用 full_content，fallback 到 RSS teaser
 │      严格 JSON Schema 输出 → 写入 analysis_results 表
 │
 │      score >= 8 AND is_urgent = true
 │           └─ 立即推送紧急告警（红色 Embed）到所有渠道
 │
-├─ 4. 生成报告
+├─ 6. 生成报告
 │      日报：TOP 20 高价值条目摘要 + 完整列表
 │      周报：每周五 15:00 北京时间自动生成
 │      RSS XML：供 RSS 阅读器订阅
 │
-└─ 5. 推送报告摘要
-       Discord / Telegram / 钉钉 / 飞书
+├─ 7. 推送报告摘要
+│      Discord / Telegram / 钉钉 / 飞书
+│
+└─ 8. 数据清理（RETENTION_DAYS，默认 90 天）
+       自动删除过期条目，回收磁盘空间
 ```
 
 ### AI 评分说明
 
 | 分数 | 含义 | 推送策略 |
 |------|------|----------|
-| 1–3 | 无效噪音（教程、一般讨论） | 静默存储 |
-| 4–6 | 低中价值（旧泄露、小规模、待核实） | 正常推送 |
+| 1–3 | 无效噪音（教程、供应商广告、一般讨论） | 静默存储 |
+| 4 | Combo 列表聚合（非新鲜泄露，上限） | 静默存储 |
+| 5–6 | 低中价值（旧泄露、小规模、待核实） | 正常推送 |
 | 7–8 | 高价值（新鲜凭证/PII，>1 万条记录） | 正常推送 |
 | **9–10** | **紧急（金融/医疗/政府，>10 万条）** | **立即单独告警** |
 
@@ -111,7 +133,7 @@ go run ./cmd/tracker --once
 需要 Go 1.22+，无其他运行时依赖。
 
 ```bash
-git clone https://github.com/your-username/darkweb-tracker
+git clone https://github.com/bambooqj/darkweb-tracker
 cd darkweb-tracker
 go build -o tracker ./cmd/tracker
 ./tracker --version
@@ -120,7 +142,7 @@ go build -o tracker ./cmd/tracker
 ### 方式二：Docker
 
 ```bash
-docker pull ghcr.io/your-username/darkweb-tracker:latest
+docker pull ghcr.io/bambooqj/darkweb-tracker:latest
 
 docker run -d \
   --name darkweb-tracker \
@@ -128,9 +150,11 @@ docker run -d \
   -e DISCORD_ENABLED=true \
   -e LLM_ENABLED=true \
   -e LLM_API_KEY="sk-..." \
+  -e FETCH_FULL_CONTENT=true \
   -v $(pwd)/data_leaks.db:/app/data_leaks.db \
   -v $(pwd)/archive:/app/archive \
-  ghcr.io/your-username/darkweb-tracker:latest
+  -v $(pwd)/filter_rules.yaml:/app/filter_rules.yaml:ro \
+  ghcr.io/bambooqj/darkweb-tracker:latest
 ```
 
 ### 方式三：GitHub Actions（无服务器运行）
@@ -146,7 +170,7 @@ docker run -d \
 ### 第一步：Fork 仓库
 
 ```
-https://github.com/your-username/darkweb-tracker
+https://github.com/bambooqj/darkweb-tracker
 → 点击右上角 Fork
 ```
 
@@ -154,10 +178,13 @@ Fork 完成后，`.github/workflows/` 中已包含以下工作流：
 
 | 文件 | 触发方式 | 功能 |
 |------|----------|------|
-| `tracker.yml` | 每天北京时间 10:00 / 手动 | 核心：抓取 + AI 分析 + 提交 + 部署 |
-| `weekly.yml` | 每周五 15:00 / 手动 | 生成并推送周报 |
+| `tracker.yml` | **手动触发**（默认暂停） | 核心：抓取 + AI 分析 + 提交 + 部署 |
+| `weekly.yml` | **手动触发**（默认暂停） | 生成并推送周报 |
+| `build.yml` | 每次代码提交自动触发 | 编译检查，验证代码可构建 |
 | `export-training.yml` | 仅手动 | 导出 JSONL 训练数据集 |
 | `setup-pages.yml` | 仅手动（首次） | 初始化 GitHub Pages |
+
+> **重要**：`tracker.yml` 和 `weekly.yml` 默认处于**暂停**状态（schedule 已注释）。配置好 Secrets 后，在工作流文件中取消注释 `schedule:` 部分启用定时运行，或直接手动触发测试。
 
 ---
 
@@ -235,7 +262,7 @@ env:
 
 之后每次主工作流运行，HTML 报告会自动部署到：
 ```
-https://your-username.github.io/darkweb-tracker/
+https://bambooqj.github.io/darkweb-tracker/
 ```
 
 ---
@@ -245,8 +272,6 @@ https://your-username.github.io/darkweb-tracker/
 ```
 仓库 → Actions → DarkWeb Forums Tracker → Run workflow → Run workflow
 ```
-
-或等待明天北京时间 10:00 自动触发。
 
 首次运行完成后，检查：
 - [ ] Actions 运行日志无报错
@@ -258,23 +283,39 @@ https://your-username.github.io/darkweb-tracker/
 
 ### 工作流文件说明
 
+#### build.yml — CI 编译检查
+
+```
+触发 → 任意分支 push（排除 .md / sources.yaml / filter_rules.yaml / 生成文件）
+     + Pull Request
+
+步骤：
+  go build ./...           ← 验证所有包可编译
+  go vet ./...             ← 静态分析
+  交叉编译 linux/amd64     ← 验证跨平台构建
+```
+
+提交代码后可在 Actions 页面查看构建状态。
+
 #### tracker.yml — 核心工作流
 
 ```
-触发 → 每天北京时间 10:00（cron: '0 10 * * *' timezone: Asia/Shanghai）
-     + 手动触发（支持 debug / skip_ai / health_check 开关）
+触发 → 手动触发（配置后可取消注释 schedule 启用定时）
 
 Job: track
   ├─ Checkout（fetch-depth: 0，完整历史）
   ├─ git pull（拉取上次运行的 db 文件）
+  ├─ 安装并启动 Tor（可选，--skip_tor 跳过）
   ├─ Setup Go 1.22 + 依赖缓存
   ├─ Build（注入版本号）
   ├─ Run tracker --once
-  │    ├─ 加载远程 sources.yaml + 健康检查
+  │    ├─ 加载远程 sources.yaml + filter_rules.yaml
   │    ├─ 抓取 RSS → 去重 → 写 SQLite
+  │    ├─ 正文全文抓取（可选）
   │    ├─ GitHub Models AI 分析（gpt-4o-mini）
   │    ├─ 紧急条目立即推送（score ≥ 8）
-  │    └─ 生成日报 HTML + RSS XML
+  │    ├─ 生成日报 HTML + RSS XML
+  │    └─ 自动清理过期数据（90 天）
   ├─ git-auto-commit（提交 db / archive / rss / index.html）
   └─ upload-pages-artifact（打包报告）
 
@@ -303,7 +344,7 @@ concurrency:
 |------|------|------|
 | `debug` | false | 开启详细日志（排查问题用） |
 | `skip_ai` | false | 跳过 AI 分析（节省配额） |
-| `health_check` | true | 对 RSS 源做健康检查 |
+| `skip_tor` | false | 跳过 Tor 代理（直连抓取，速度更快） |
 
 ---
 
@@ -317,8 +358,6 @@ concurrency:
 
 ### RSS 源管理
 
-这是本工具最关键的配置。Dark web 论坛域名平均每 3–6 个月迁移一次，建议使用远程源动态管理。
-
 **三层加载机制（优先级由高到低）：**
 
 ```
@@ -327,28 +366,19 @@ concurrency:
 本地 config.yaml 的 data_sources 块
     ↓ 合并补充
 内置 seed 列表（代码内，永不为空）
-    ↓ 全部合并后
-HEAD 健康检查（并发探活，自动剔除死链）
+    ↓
+自动发现（deepdarkCTI / ransomware.live / ransomwatch / ransomlook）
 ```
 
 **config.yaml 配置：**
 
 ```yaml
 sources:
-  # 远程源 URL，支持两种格式：
-  # 格式 A：GitHub 简写（自动展开为 raw URL）
-  remote_url: "your-username/darkweb-tracker/main/sources.yaml"
-  # 格式 B：完整 HTTPS URL
-  # remote_url: "https://raw.githubusercontent.com/your-username/darkweb-tracker/main/sources.yaml"
-
-  # 同名源冲突时，是否让本地配置优先（默认远程优先）
+  remote_url: "bambooqj/darkweb-tracker/main/sources.yaml"
   local_overrides_remote: false
-
-  # 启动时并发 HEAD 探活，自动跳过无响应的 URL（推荐开启）
-  health_check: true
-
-  # 禁用内置 seed（若完全自己管理源列表）
+  health_check: false          # GitHub Actions runner 网络与论坛连通性不同，建议关闭
   disable_builtin_seeds: false
+  disable_auto_discover: false # 自动从 deepdarkCTI 发现新源
 ```
 
 **远程 sources.yaml 格式：**
@@ -358,37 +388,101 @@ version: "1"
 updated: "2026-05-11"
 
 sources:
-  - name: "leakbase"
-    rss_url: "https://leakbase.la/forums/-/index.rss"
+  - name: "breachforums-rs"
+    rss_url: "https://breachforums.rs/syndication.php?limit=50"
     enabled: true
-    tags: ["database", "credentials", "pii"]
-    note: ""
+    tags: ["database", "credentials", "tier1"]
 
   - name: "xforums.st"
     rss_url: "https://xforums.st/forums/-/index.rss"
-    enabled: false                 # 暂时宕机，设 false 跳过
+    enabled: false
     note: "2026-05 超时，待确认新域名"
 ```
 
-> **维护建议：** Fork 本项目，修改根目录的 `sources.yaml`，推送后所有运行实例下次启动自动获取最新源。无需重新部署二进制。
+> **维护建议：** 修改根目录的 `sources.yaml` 后推送，所有运行实例下次启动自动获取最新源，无需重新部署。
 
-**内置 seed（当前验证可用）：**
+---
 
-| 源名称 | 当前状态 |
-|--------|----------|
-| gerki | ✅ |
-| blackbones | ✅ |
-| hard-tm | ✅ |
-| ascarding | ✅ |
-| mipped | ✅ |
-| leakbase | ✅ |
-| dublikat | ✅ |
-| cardforum | ✅ |
-| ipbmafia | ✅ |
-| xforums.st | ❌ 默认禁用（超时） |
-| htdark | ❌ 默认禁用（403） |
-| niflheim | ❌ 默认禁用（403） |
-| sinister | ❌ 默认禁用（DNS 失败） |
+### 过滤规则（filter_rules.yaml）
+
+**过滤规则完全外置为 YAML 文件，修改后重启生效，无需重新编译。**
+
+```yaml
+# filter_rules.yaml — 三部分结构
+
+skip_patterns:      # 命中任意 keyword → 存 DB 但跳过分析和推送
+  - { keyword: "combo list",   reason: "email combo aggregation" }
+  - { keyword: "whatsapp:",    reason: "vendor contact post" }
+  # ... 更多模式
+
+named_targets:      # 命中任意条目 → 强制进入分析（优先于 skip_patterns）
+  - "hospital"
+  - "bank"
+  - "government"
+  # ... 更多高价值目标
+
+rules:
+  vendor_patterns:  # 匹配任意条目 → 规则引擎直接返回 score=2
+    - "whatsapp:"
+    - "combo mixed email"
+
+  tier1_sites:      # 一级论坛，评分 +1
+    - "breachforum"
+    - "leakbase"
+
+  data_types:       # 数据类型关键词 → 影响评分加成
+    email:    ["email", "@gmail", "@yahoo"]
+    password: ["password", "passwd", "pwd"]
+    # ...
+```
+
+**关键设计：**
+- `skip_patterns` 与 `named_targets` 均为小写子串匹配，不区分大小写
+- `named_targets` 优先级高于 `skip_patterns`，确保命名受害者不被误过滤
+- `combo` 数据类型命中后，规则引擎将评分**上限钳制为 4**，防止 combo 列表误报为高危泄露
+- 供应商广告模式（WhatsApp 号码、护照售卖等）由 `vendor_patterns` 统一拦截，直接返回 score=2
+
+如需自定义规则，直接编辑 `filter_rules.yaml`；文件不存在时程序使用内置默认规则。
+
+指定自定义规则文件路径：
+
+```bash
+./tracker --rules /path/to/my_rules.yaml --once
+```
+
+---
+
+### 正文全文抓取
+
+默认情况下，程序只使用 RSS feed 提供的 teaser 片段（通常 200-500 字）作为 AI 分析的输入。开启全文抓取后，程序会额外 GET 帖子原始链接，通过 [go-readability](https://codeberg.org/readeck/go-readability) 提取正文，再用 [html-to-markdown](https://github.com/JohannesKaufmann/html-to-markdown) 转为干净 Markdown，作为 AI 分析的主要输入。
+
+**效果对比：**
+
+| | RSS Teaser | 全文抓取 |
+|---|---|---|
+| 内容长度 | ~200 字 | 完整帖子正文 |
+| 信息完整性 | 截断，常有"登录查看" | 完整内容（公开可见部分） |
+| AI 评分准确性 | 受限 | 显著提升 |
+| 额外网络请求 | 无 | 每个新条目一次 GET |
+
+**config.yaml 配置：**
+
+```yaml
+fetch:
+  full_content: false           # FETCH_FULL_CONTENT — 总开关
+  content_timeout: 15s          # FETCH_CONTENT_TIMEOUT — 单页超时
+  content_max_bytes: 524288     # FETCH_CONTENT_MAX_BYTES — 最大读取 512KB
+```
+
+**环境变量：**
+
+```bash
+FETCH_FULL_CONTENT=true
+FETCH_CONTENT_TIMEOUT=20s
+FETCH_CONTENT_MAX_BYTES=524288
+```
+
+> **注意**：全文抓取通过与 RSS 抓取相同的 HTTP client 发出，代理/Tor 设置同样生效。暗网论坛 clearnet 镜像通常可以直接访问。
 
 ---
 
@@ -401,16 +495,26 @@ sources:
 ```yaml
 llm:
   enabled: false
-  provider: "openai"       # 仅用于日志标识
+  provider: "openai"
   base_url: ""             # 留空 = 官方 OpenAI
   api_key: ""
   model: "gpt-4o-mini"
-  rpm: 60                  # 每分钟最大请求数
-  rpm_burst: 5             # 令牌桶突发量
-  workers: 3               # 并发分析 goroutine 数
-  urgent_score_threshold: 8  # >= 此分立即推送告警
-  daily_top_n: 20          # 日报展示 TOP N 条目
-  skip_analyzed_items: true  # 重启后跳过已分析条目（节省费用）
+  rpm: 60
+  rpm_burst: 5
+  workers: 3
+  urgent_score_threshold: 8
+  notify_min_score: 5      # >= 此分才推送（低于此分仅存 DB）
+  daily_top_n: 20
+  skip_analyzed_items: true
+  max_input_chars: 0       # 0 = 不限制（全文内容较长时可设 30000）
+
+  # 备用提供商链（主提供商失败时自动切换）
+  fallback_providers:
+    - name: "deepseek"
+      base_url: "https://api.deepseek.com/v1"
+      api_key: ""
+      model: "deepseek-chat"
+      rpm: 30
 ```
 
 **各提供商配置示例：**
@@ -426,14 +530,14 @@ LLM_ENABLED=true
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_API_KEY=sk-...
 LLM_MODEL=deepseek-chat
-LLM_RPM=30               # DeepSeek 免费层限制
+LLM_RPM=30
 
 # Ollama（本地，零费用）
 LLM_ENABLED=true
 LLM_BASE_URL=http://localhost:11434/v1
-LLM_API_KEY=ollama        # 随意填写
+LLM_API_KEY=ollama
 LLM_MODEL=llama3.2
-LLM_RPM=600               # 本地无限速
+LLM_RPM=600
 ```
 
 **AI 输出结构（每条分析结果）：**
@@ -441,7 +545,7 @@ LLM_RPM=600               # 本地无限速
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `score` | int 1–10 | 数据泄露价值评分 |
-| `category` | string | 主分类标签（见下表） |
+| `category` | string | 主分类标签 |
 | `tags` | []string | 次级多标签 |
 | `summary` | string | 1–2 句中文摘要 |
 | `affected_targets` | []string | 受影响组织/国家/平台 |
@@ -468,24 +572,20 @@ push:
   discord:
     webhook: "https://discord.com/api/webhooks/..."
     enabled: true
-    send_normal_msg: true     # 每条新发现推送
-    send_daily_report: false  # 日报推送（内容较长）
-    send_weekly_report: true  # 周报推送
+    send_normal_msg: true
+    send_daily_report: false
+    send_weekly_report: true
 ```
 
-消息颜色含义：
-- 🟢 绿色：服务启动通知
-- 🔴 红色：紧急告警（score ≥ 8）
-- 🟣 紫色：日报 / 周报
-- 🎨 随机色：普通新条目
+消息颜色：🟢 启动 · 🔴 紧急告警 · 🟣 日报/周报 · 🎨 随机色普通条目
 
 #### Telegram
 
 ```yaml
 push:
   telegram:
-    token: "7xxxxxxx:AAF..."   # BotFather 获取
-    chat_id: "-100xxxxxxx"     # 群组或频道 ID
+    token: "7xxxxxxx:AAF..."
+    chat_id: "-100xxxxxxx"
     enabled: true
 ```
 
@@ -495,7 +595,7 @@ push:
 push:
   dingtalk:
     webhook: "https://oapi.dingtalk.com/robot/send?access_token=..."
-    secret_key: "SEC..."       # 安全设置 → 加签
+    secret_key: "SEC..."
     enabled: true
 ```
 
@@ -518,9 +618,10 @@ proxy:
   http: "http://127.0.0.1:7890"
   https: "http://127.0.0.1:7890"
   no_proxy: "localhost,127.0.0.1"
+  tor_socks: ""    # TOR_SOCKS — 如 "socks5://127.0.0.1:9050"
 ```
 
-代理对 RSS 抓取和所有推送渠道均生效。访问 dark web 论坛的 clearnet 镜像通常不需要代理；若需要访问 `.onion` 地址，需要配置 Tor SOCKS5 代理（`socks5://127.0.0.1:9050`）。
+代理优先级：**Tor SOCKS5 > HTTP/HTTPS 代理 > 直连**。推送渠道（Discord/Telegram 等）使用独立 HTTP client，不经过 Tor，避免 clearnet API 连通性问题。
 
 ---
 
@@ -528,20 +629,22 @@ proxy:
 
 ```yaml
 night_sleep:
-  enabled: true    # 北京时间 00:00–07:00 自动跳过轮询
-  start_hour: 0
-  end_hour: 7
+  enabled: true
+  start_hour: 0    # 北京时间 00:00
+  end_hour: 7      # 北京时间 07:00
 
 daily_report:
-  enabled: true    # 每次轮询结束后生成当日报告到 archive/
+  enabled: true
 
 weekly_report:
   enabled: true
   push_enabled: true
-  push_time: "15:00"   # 北京时间
-  push_day: 5          # 5 = 周五
+  push_time: "15:00"
+  push_day: 5       # 5 = 周五
 
-interval: "2h"         # 轮询间隔，支持 1h / 30m / 2h 等格式
+interval: "2h"
+
+retention_days: 90  # RETENTION_DAYS — 0=永久保留，默认 90 天自动清理
 ```
 
 报告文件存储结构：
@@ -549,13 +652,13 @@ interval: "2h"         # 轮询间隔，支持 1h / 30m / 2h 等格式
 ```
 archive/
 ├── 2026-05-11/
-│   ├── Daily_2026-05-11.md    # Markdown 版日报
-│   └── Daily_2026-05-11.html  # 带样式的 HTML 日报
+│   ├── Daily_2026-05-11.md
+│   └── Daily_2026-05-11.html
 └── Weekly_2026-05-05_2026-05-11.md
 
 rss/
 ├── daily_rss_2026-05-11.xml
-├── latest_daily_rss.xml       # 始终指向最新日报（推荐订阅此链接）
+├── latest_daily_rss.xml        # 推荐订阅此链接
 ├── weekly_rss_2026-05-05_2026-05-11.xml
 └── latest_weekly_rss.xml
 ```
@@ -569,8 +672,13 @@ rss/
 | **源管理** | | |
 | `SOURCES_REMOTE_URL` | `""` | 远程 sources.yaml URL 或 GitHub 简写 |
 | `SOURCES_LOCAL_OVERRIDES` | `false` | 本地源优先于远程 |
-| `SOURCES_HEALTH_CHECK` | `true` | 启动时健康探活 |
+| `SOURCES_HEALTH_CHECK` | `false` | 启动时健康探活 |
 | `SOURCES_NO_SEEDS` | `false` | 禁用内置 seed |
+| `SOURCES_NO_AUTODISCOVER` | `false` | 禁用自动发现 |
+| **正文抓取** | | |
+| `FETCH_FULL_CONTENT` | `false` | 开启全文抓取总开关 |
+| `FETCH_CONTENT_TIMEOUT` | `15s` | 单页抓取超时 |
+| `FETCH_CONTENT_MAX_BYTES` | `524288` | 最大读取字节数（512KB） |
 | **AI 分析** | | |
 | `LLM_ENABLED` | `false` | 总开关 |
 | `LLM_PROVIDER` | `openai` | 提供商标识（仅日志用） |
@@ -581,6 +689,8 @@ rss/
 | `LLM_RPM_BURST` | `5` | 令牌桶突发量 |
 | `LLM_WORKERS` | `3` | 并发分析 goroutine 数 |
 | `LLM_URGENT_THRESHOLD` | `8` | 紧急告警分数阈值 |
+| `LLM_NOTIFY_MIN_SCORE` | `5` | 最低推送分数 |
+| `LLM_MAX_INPUT_CHARS` | `0` | 输入截断（0=不限） |
 | `LLM_DAILY_TOP_N` | `20` | 日报 TOP N 条目数 |
 | `LLM_SKIP_ANALYZED` | `true` | 跳过已分析条目 |
 | **Discord** | | |
@@ -604,12 +714,15 @@ rss/
 | `PROXY_ENABLED` | `false` | 代理总开关 |
 | `HTTP_PROXY` | `""` | HTTP 代理地址 |
 | `HTTPS_PROXY` | `""` | HTTPS 代理地址 |
+| `TOR_SOCKS` | `""` | Tor SOCKS5 地址，如 `socks5://127.0.0.1:9050` |
 | **调度** | | |
 | `NIGHT_SLEEP_ENABLED` | `true` | 夜间休眠开关 |
 | `DAILY_REPORT_ENABLED` | `true` | 生成日报 |
 | `WEEKLY_REPORT_ENABLED` | `true` | 生成周报 |
 | `WEEKLY_REPORT_PUSH_ENABLED` | `true` | 推送周报 |
 | `POLL_INTERVAL` | `2h` | 轮询间隔 |
+| `RETENTION_DAYS` | `90` | 数据保留天数（0=永久） |
+| `MAX_ITEM_AGE_DAYS` | `7` | 超过此天数的帖子跳过分析 |
 | **单数据源开关** | | |
 | `DATASOURCE_<KEY>` | — | 如 `DATASOURCE_GERKI=false` 禁用单个源 |
 
@@ -629,9 +742,13 @@ rss/
 # 开启调试日志
 ./tracker --once --debug
 
+# 指定自定义规则文件
+./tracker --rules my_rules.yaml --once
+
 # 自定义路径
 ./tracker \
   --config /etc/tracker/config.yaml \
+  --rules /etc/tracker/filter_rules.yaml \
   --db /var/data/leaks.db \
   --archive /var/reports \
   --once
@@ -640,23 +757,26 @@ rss/
 ### Docker
 
 ```bash
-# 基础运行（自动使用内置 seed）
+# 基础运行
 docker run --rm \
   -e DISCORD_WEBHOOK="https://discord.com/api/webhooks/..." \
   -e DISCORD_ENABLED=true \
+  -e FETCH_FULL_CONTENT=true \
   -v $(pwd)/data_leaks.db:/app/data_leaks.db \
   -v $(pwd)/archive:/app/archive \
-  ghcr.io/your-username/darkweb-tracker:latest --once
+  -v $(pwd)/filter_rules.yaml:/app/filter_rules.yaml:ro \
+  ghcr.io/bambooqj/darkweb-tracker:latest --once
 
-# 完整配置（挂载自定义 config.yaml）
+# 完整配置
 docker run -d \
   --name tracker \
   --restart unless-stopped \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  -v $(pwd)/filter_rules.yaml:/app/filter_rules.yaml:ro \
   -v $(pwd)/data_leaks.db:/app/data_leaks.db \
   -v $(pwd)/archive:/app/archive \
   -v $(pwd)/rss:/app/rss \
-  ghcr.io/your-username/darkweb-tracker:latest
+  ghcr.io/bambooqj/darkweb-tracker:latest
 ```
 
 **docker-compose.yml：**
@@ -664,10 +784,11 @@ docker run -d \
 ```yaml
 services:
   tracker:
-    image: ghcr.io/your-username/darkweb-tracker:latest
+    image: ghcr.io/bambooqj/darkweb-tracker:latest
     restart: unless-stopped
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - ./filter_rules.yaml:/app/filter_rules.yaml:ro
       - ./data_leaks.db:/app/data_leaks.db
       - ./archive:/app/archive
       - ./rss:/app/rss
@@ -677,21 +798,9 @@ services:
       - LLM_ENABLED=${LLM_ENABLED:-false}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
-      - SOURCES_REMOTE_URL=${SOURCES_REMOTE_URL}
+      - FETCH_FULL_CONTENT=${FETCH_FULL_CONTENT:-false}
+      - RETENTION_DAYS=90
 ```
-
-### GitHub Actions
-
-项目内置 `.github/workflows/tracker.yml`，Fork 后配置以下 Secrets 即可：
-
-**必填 Secrets：**
-- `DISCORD_WEBHOOK`
-
-**可选 Secrets：**
-- `LLM_API_KEY` — 开启 AI 分析
-- `SOURCES_REMOTE_URL` — 使用远程源列表
-
-默认执行计划：北京时间每天 10:00 运行一次（`--once` 模式），结果 commit 回仓库，部署在 GitHub Pages 可直接访问 HTML 报告。
 
 ---
 
@@ -708,14 +817,15 @@ link           TEXT NOT NULL UNIQUE    -- 去重键
 pub_date       TEXT
 author         TEXT
 category       TEXT
-content        TEXT
+content        TEXT                    -- RSS teaser（始终可用）
+full_content   TEXT DEFAULT ''         -- 全文 Markdown（FETCH_FULL_CONTENT=true 时填充）
 download_links TEXT
 site_name      TEXT NOT NULL
 created_at     DATETIME
 ai_score       INTEGER DEFAULT 0       -- AI 评分快速过滤
 ai_category    TEXT DEFAULT ''
 ai_urgent      INTEGER DEFAULT 0       -- 1 = 紧急
-urgent_notified INTEGER DEFAULT 0      -- 1 = 已推送告警
+urgent_notified INTEGER DEFAULT 0     -- 1 = 已推送告警
 ```
 
 **`analysis_results` 表** — AI 分析结果：
@@ -749,9 +859,6 @@ analyzed_at      DATETIME
 
 # 指定时间范围
 ./tracker --export-training --since 2026-01-01 --until 2026-04-30 --out q1_2026.jsonl
-
-# 查看导出结果
-head -n 1 training_data.jsonl | python3 -m json.tool
 ```
 
 每行一个 JSON 对象，字段全部使用 `snake_case`（Python 兼容）：
@@ -760,12 +867,13 @@ head -n 1 training_data.jsonl | python3 -m json.tool
 {
   "item_id": 42,
   "title": "Selling fresh 500k combo list from banking portal",
-  "content": "...",
+  "content": "RSS teaser...",
+  "full_content": "完整正文 Markdown（如已抓取）",
   "site_name": "leakbase",
   "score": 9,
   "category": "credential_leak",
   "tags": ["email", "password", "banking", "fresh"],
-  "summary": "出售来自某银行门户网站的 50 万条新鲜账号密码组合，数据采集于本月。",
+  "summary": "出售来自某银行门户网站的 50 万条新鲜账号密码组合。",
   "affected_targets": ["Banking Portal"],
   "estimated_records": 500000,
   "data_types": ["email", "password"],
@@ -778,64 +886,30 @@ head -n 1 training_data.jsonl | python3 -m json.tool
 }
 ```
 
-**Python 加载示例：**
-
-```python
-import pandas as pd
-
-df = pd.read_json("training_data.jsonl", lines=True)
-
-# 高价值数据（score >= 7）
-high_value = df[df["score"] >= 7]
-
-# 按类别分布统计
-print(df["category"].value_counts())
-
-# 训练集分割
-from sklearn.model_selection import train_test_split
-train, test = train_test_split(df, test_size=0.2, stratify=df["category"])
-```
-
 ---
 
 ## RSS 源维护
 
 ### 为什么需要维护源列表？
 
-Dark web 论坛域名极其不稳定：
-- 平均迁移周期：**3–6 个月**
-- 执法行动期间可能**每周更换**
-- 迁移通常通过 Telegram 频道或 Dread 论坛公告
+Dark web 论坛域名极其不稳定，平均迁移周期 3–6 个月。
 
 ### 推荐工作流
 
 ```
 每月检查一次：
 
-1. 查看程序日志中的健康检查失败记录
-   grep "health check failed" tracker.log
+1. 查看日志中的 fetch failed 记录
+   grep "fetch failed" tracker.log
 
-2. 在 fastfire/deepdarkCTI 的 forum.md 查找新地址
+2. 在 fastfire/deepdarkCTI 查找最新状态
    https://github.com/fastfire/deepdarkCTI/blob/main/forum.md
 
-3. 更新你 fork 的 sources.yaml：
-   - 将迁移的旧域名 enabled 改为 false，note 写明原因
-   - 添加新域名条目（enabled: false，先验证再启用）
+3. 更新 sources.yaml：
+   - 旧域名设 enabled: false，写明原因
+   - 新域名设 enabled: false，验证后再启用
 
 4. git push → 所有实例下次启动自动生效
-```
-
-### 手动验证新 URL
-
-```bash
-# 测试 RSS URL 是否有效
-curl -sI "https://newdomain.example/forums/-/index.rss" | head -5
-
-# 测试是否返回 RSS 内容
-curl -s "https://newdomain.example/forums/-/index.rss" | head -20
-
-# 运行单次并开 debug 查看源加载情况
-SOURCES_REMOTE_URL="" ./tracker --once --debug 2>&1 | grep -E "source|health"
 ```
 
 ### 常见论坛 RSS 路径规律
@@ -862,33 +936,51 @@ darkweb-tracker/
 │   ├── config/
 │   │   └── config.go        # YAML 加载 + 环境变量覆盖（分层合并）
 │   │
+│   ├── rules/
+│   │   └── rules.go         # 过滤规则结构体 + YAML 加载器（含内置默认值）
+│   │
 │   ├── sources/
-│   │   └── loader.go        # 三层源加载：远程 → 本地 → seed；健康检查
+│   │   └── loader.go        # 多层源加载：远程 → 本地 → seed → 自动发现
 │   │
 │   ├── feed/
-│   │   └── fetcher.go       # RSS/Atom 抓取、内容清洗、下载链接提取
+│   │   └── fetcher.go       # RSS/Atom 抓取；全文抓取（readability + html-to-markdown）
 │   │
 │   ├── storage/
-│   │   ├── storage.go       # SQLite 基础 CRUD（items 表）
-│   │   └── analysis.go      # AI 结果存储、TopN 查询、训练数据导出
+│   │   ├── storage.go       # SQLite CRUD（items 表，含 full_content 列）
+│   │   └── analysis.go      # AI 结果存储、TopN 查询、训练数据导出、Prune TTL
 │   │
 │   ├── analyzer/
-│   │   └── analyzer.go      # LLM 调用、结构化输出、Worker Pool、限速
+│   │   ├── analyzer.go      # LLM 调用、流式 API、Worker Pool、限速、重试
+│   │   ├── rules.go         # 规则引擎：纯确定性评分，从 FilterRules 读取所有配置
+│   │   └── hybrid.go        # HybridAnalyzer：多提供商链式 fallback
+│   │
+│   ├── filter/
+│   │   └── titlefilter.go   # 标题预过滤（消费 FilterRules，零硬编码）
 │   │
 │   ├── notify/
-│   │   └── notify.go        # 4 渠道推送：Discord/Telegram/钉钉/飞书
+│   │   └── notify.go        # 4 渠道推送：Discord / Telegram / 钉钉 / 飞书
 │   │
 │   ├── report/
-│   │   └── report.go        # Markdown + HTML 日报/周报；RSS XML 生成
+│   │   └── report.go        # HTML/MD 日报周报（html/template）；RSS（gorilla/feeds）
 │   │
-│   └── scheduler/
-│       └── scheduler.go     # 主循环、夜眠、AI 集成、紧急告警、周报调度
+│   ├── scheduler/
+│   │   └── scheduler.go     # 主循环、pipeline、紧急告警、报告调度、TTL 清理
+│   │
+│   └── web/
+│       ├── server.go        # 内置 HTTP 服务（Telegram Login Widget 认证）
+│       ├── auth.go          # Session 管理
+│       └── api.go           # REST API：/api/items /api/stats
 │
-├── config.yaml              # 默认配置模板（含完整注释）
-├── sources.yaml             # 社区 RSS 源列表（Fork 后维护此文件）
+├── config.yaml              # 主配置模板（含完整注释）
+├── filter_rules.yaml        # 过滤规则（可单独迭代，无需重编译）
+├── sources.yaml             # RSS 源列表（Fork 后在此维护）
 ├── Dockerfile               # 多阶段构建，最终镜像 ~20MB
 └── .github/workflows/
-    └── tracker.yml          # GitHub Actions 定时运行
+    ├── build.yml            # CI：每次提交自动编译检查
+    ├── tracker.yml          # 核心工作流（默认暂停，配置后启用）
+    ├── weekly.yml           # 周报工作流（默认暂停）
+    ├── export-training.yml  # 训练数据导出（仅手动）
+    └── setup-pages.yml      # GitHub Pages 初始化（首次运行一次）
 ```
 
 ---
@@ -897,7 +989,19 @@ darkweb-tracker/
 
 **Q：不配置 LLM_API_KEY 也能运行吗？**
 
-可以。AI 分析是可选功能，不配置时程序正常抓取、去重、生成报告，只是没有评分和紧急告警。日报会展示所有条目而不是 TOP 20。
+可以。不配置 LLM 时，程序使用内置规则引擎（`rules.go`）进行确定性评分：根据记录数量、数据类型关键词、站点分级等规则估算分数，无需网络调用，完全免费。规则引擎的模式同样从 `filter_rules.yaml` 加载，可以自定义。
+
+---
+
+**Q：如何自定义过滤规则而不重新编译？**
+
+直接编辑 `filter_rules.yaml`，重启程序即可。支持：
+- 添加/删除 `skip_patterns` 中的关键词
+- 添加新的 `named_targets`（高价值目标白名单）
+- 调整 `rules.vendor_patterns`（供应商垃圾帖识别）
+- 修改 `rules.data_types`（数据类型关键词）
+
+文件不存在时程序自动使用内置默认规则，不影响启动。
 
 ---
 
@@ -909,9 +1013,7 @@ darkweb-tracker/
 
 **Q：health_check 报告某个源失败，但我知道它是活的？**
 
-某些论坛对 `HEAD` 请求返回 403，但对 `GET` 正常响应（例如 htdark）。这种情况下健康检查会误报。
-
-解决方案：关闭健康检查，手动管理 enabled 状态：
+某些论坛对 `HEAD` 请求返回 403，但对 `GET` 正常响应。建议关闭健康检查，手动管理源状态：
 
 ```bash
 SOURCES_HEALTH_CHECK=false ./tracker --once
@@ -919,38 +1021,36 @@ SOURCES_HEALTH_CHECK=false ./tracker --once
 
 ---
 
-**Q：如何只监控某几个源？**
-
-方式一：在 `config.yaml` 的 `data_sources` 中只保留需要的条目，其余删除。
-
-方式二：通过环境变量禁用不需要的源：
-
-```bash
-DATASOURCE_CARDFORUM=false DATASOURCE_IPBMAFIA=false ./tracker --once
-```
-
-方式三：设置 `disable_builtin_seeds: true`，只使用你在 `data_sources` 中显式配置的源。
-
----
-
 **Q：SQLite 数据库文件会无限增长吗？**
 
-RSS 条目会持续累积，建议定期归档或清理旧数据。可以用以下 SQL 手动清理 90 天前的记录：
+不会。程序内置 TTL 清理机制，每次 poll 结束后自动删除超过 `retention_days`（默认 90 天）的旧记录并压缩磁盘空间。
+
+调整保留天数：
 
 ```bash
-sqlite3 data_leaks.db "DELETE FROM items WHERE created_at < date('now', '-90 days'); VACUUM;"
+RETENTION_DAYS=30 ./tracker --once   # 只保留最近 30 天
+RETENTION_DAYS=0  ./tracker --once   # 永久保留（不清理）
 ```
 
 ---
 
 **Q：如何让同一台机器监控不同的源列表？**
 
-为每个实例使用独立的数据库和配置文件：
+```bash
+# 实例 A：金融类论坛 + 专用规则
+./tracker --config config-financial.yaml --rules rules-financial.yaml --db financial.db --once
+
+# 实例 B：全部源 + 默认规则
+./tracker --config config-all.yaml --db all.db --once
+```
+
+---
+
+**Q：全文抓取会拖慢速度吗？**
+
+每个新帖子会额外发出一次 HTTP GET（默认 15 秒超时）。抓取与分析是并行流水线，通常不会显著增加总耗时。若遇到慢速源：
 
 ```bash
-# 实例 A：只监控金融类论坛
-./tracker --config config-financial.yaml --db financial.db --once
-
-# 实例 B：监控所有论坛
-./tracker --config config-all.yaml --db all.db --once
+FETCH_CONTENT_TIMEOUT=8s ./tracker --once   # 缩短超时
+FETCH_FULL_CONTENT=false ./tracker --once   # 或直接关闭
 ```
