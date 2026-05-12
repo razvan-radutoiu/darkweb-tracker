@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dustin/go-humanize"
 )
 
 // ---------------------------------------------------------------------------
@@ -332,7 +334,7 @@ func (t *Telegram) Send(ctx context.Context, msg Message) error {
 		// 降级：纯文本（无 AI 或日报/周报汇总）
 		text = fmt.Sprintf("*%s*\n%s", escapeMarkdownV2(msg.Title), escapeMarkdownV2(msg.Body))
 		if msg.Link != "" {
-			text += fmt.Sprintf("\n[链接](%s)", msg.Link)
+			text += fmt.Sprintf("\n[链接](%s)", escapeTelegramURL(msg.Link))
 		}
 	}
 
@@ -394,7 +396,7 @@ func buildTelegramRichText(msg Message) string {
 
 	// Estimated records
 	if msg.EstimatedRecords > 0 {
-		b.WriteString(fmt.Sprintf("📊 规模: ~%s 条\n", escapeMarkdownV2(formatCount(msg.EstimatedRecords))))
+		b.WriteString(fmt.Sprintf("📊 规模: ≈%s 条\n", escapeMarkdownV2(formatCount(msg.EstimatedRecords))))
 	}
 
 	// AI summary
@@ -404,22 +406,15 @@ func buildTelegramRichText(msg Message) string {
 
 	// Link
 	if msg.Link != "" {
-		b.WriteString(fmt.Sprintf("🔗 [查看原文](%s)", msg.Link))
+		b.WriteString(fmt.Sprintf("🔗 [查看原文](%s)", escapeTelegramURL(msg.Link)))
 	}
 
 	return b.String()
 }
 
-// formatCount formats large numbers with K/M suffixes.
+// formatCount formats large numbers with K/M suffixes using go-humanize.
 func formatCount(n int) string {
-	switch {
-	case n >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
-	case n >= 1_000:
-		return fmt.Sprintf("%.1fK", float64(n)/1_000)
-	default:
-		return strconv.Itoa(n)
-	}
+	return humanize.Comma(int64(n))
 }
 
 // escapeMarkdownV2 escapes characters reserved in Telegram MarkdownV2.
@@ -433,6 +428,15 @@ func escapeMarkdownV2(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// escapeTelegramURL escapes characters that must be escaped inside the URL
+// part of a MarkdownV2 inline link syntax: [text](url).
+// Per Telegram spec, only ) and \ need escaping inside the parentheses.
+func escapeTelegramURL(u string) string {
+	u = strings.ReplaceAll(u, `\`, `\\`)
+	u = strings.ReplaceAll(u, `)`, `\)`)
+	return u
 }
 
 // ---------------------------------------------------------------------------

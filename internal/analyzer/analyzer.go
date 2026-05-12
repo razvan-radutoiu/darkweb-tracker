@@ -87,6 +87,12 @@ func isRetryable(err error) (bool, time.Duration) {
 	}
 	msg := err.Error()
 
+	// 403 — Forbidden; staged back-off, caller multiplies base by attempt number:
+	// attempt 1 → 20 s, attempt 2 → 40 s, attempt 3 → 60 s.
+	if strings.Contains(msg, "403") {
+		return true, 20 * time.Second
+	}
+
 	// 429 — rate limited. Try to read exact retry-after from error message.
 	if strings.Contains(msg, "429") {
 		wait := 15 * time.Second // safe default; most providers reset within 10-60s
@@ -160,7 +166,8 @@ type AnalysisResult struct {
 type BatchItem struct {
 	ID            int64
 	Title         string
-	Content       string
+	Content       string // RSS teaser fallback
+	FullContent   string // full page Markdown (preferred when non-empty)
 	SiteName      string
 	PubDate       string // RFC3339 or empty — passed to LLM for freshness context
 	Author        string // poster/threat actor handle — known TA raises confidence
@@ -198,7 +205,7 @@ func New(cfg config.LLMConfig, log *slog.Logger) *Analyzer {
 
 	rpm := cfg.RPM
 	if rpm <= 0 {
-		rpm = 60
+		rpm = 30
 	}
 	burst := cfg.RPMBurst
 	if burst <= 0 {
@@ -224,19 +231,32 @@ func New(cfg config.LLMConfig, log *slog.Logger) *Analyzer {
 //   - With streaming we only need a wall-clock deadline (perStreamTimeout) that fires
 //     if the provider stops sending data entirely — not for normal processing delay.
 //
-// Content size: if MaxInputChars > 0 in config, content is trimmed to that limit.
-// Otherwise the full post body is sent and the provider handles its own context window.
-func (a *Analyzer) Analyze(ctx context.Context, title, content, siteName, pubDate, author, downloadLinks string) (*AnalysisResult, error) {
+// fullContent is the full page body as Markdown (preferred over content when non-empty).
+// content is the RSS teaser fallback.
+// Content size: if MaxInputChars > 0 in config, the effective body is trimmed to that limit.
+func (a *Analyzer) Analyze(ctx context.Context, title, content, fullContent, siteName, pubDate, author, downloadLinks string) (*AnalysisResult, error) {
 	if err := a.limiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("rate limiter wait: %w", err)
 	}
 
-	// Trim content only if an explicit limit is configured; otherwise send in full.
-	if a.cfg.MaxInputChars > 0 {
-		content = truncate(strings.TrimSpace(content), a.cfg.MaxInputChars)
+	// Prefer full page content; fall back to RSS teaser for length trimming.
+	body := fullContent
+	if body == "" {
+		body = content
 	}
 
-	userMsg := buildUserMessage(title, content, siteName, pubDate, author, downloadLinks)
+	// Trim body only if an explicit limit is configured; otherwise send in full.
+	if a.cfg.MaxInputChars > 0 {
+		body = truncate(strings.TrimSpace(body), a.cfg.MaxInputChars)
+		// Propagate the trimmed body back to the correct field.
+		if fullContent != "" {
+			fullContent = body
+		} else {
+			content = body
+		}
+	}
+
+	userMsg := buildUserMessage(title, content, fullContent, siteName, pubDate, author, downloadLinks)
 	model := a.cfg.Model
 	if model == "" {
 		model = "gpt-4o-mini"
@@ -249,8 +269,14 @@ func (a *Analyzer) Analyze(ctx context.Context, title, content, siteName, pubDat
 			if !retryable {
 				break
 			}
-			jitter := time.Duration(rand.Int63n(int64(5 * time.Second)))
-			delay := baseWait + jitter
+			var delay time.Duration
+			if strings.Contains(lastErr.Error(), "403") {
+				// Staged back-off for 403: 20s → 40s → 60s
+				delay = baseWait * time.Duration(attempt)
+			} else {
+				jitter := time.Duration(rand.Int63n(int64(5 * time.Second)))
+				delay = baseWait + jitter
+			}
 			a.log.Warn("retrying LLM streaming call",
 				"attempt", attempt,
 				"wait", delay.Round(time.Millisecond),
@@ -360,7 +386,7 @@ func (a *Analyzer) AnalyzeBatch(ctx context.Context, items []BatchItem, workers 
 		go func() {
 			defer wg.Done()
 			for item := range jobs {
-				res, err := a.Analyze(ctx, item.Title, item.Content, item.SiteName, item.PubDate, item.Author, item.DownloadLinks)
+				res, err := a.Analyze(ctx, item.Title, item.Content, item.FullContent, item.SiteName, item.PubDate, item.Author, item.DownloadLinks)
 				results <- BatchResult{ID: item.ID, Result: res, Err: err}
 			}
 		}()
@@ -451,14 +477,23 @@ func preExtractSignals(title, content string) string {
 }
 
 // buildUserMessage constructs the user prompt from post metadata.
-// Content truncation is handled by the caller (Analyze) based on MaxInputChars config.
+// When FullContent is non-empty it is used instead of Content, giving the LLM
+// the full article body rather than the RSS teaser snippet.
 // pubDate, author, downloadLinks are optional — pass empty string when unavailable.
-func buildUserMessage(title, content, siteName, pubDate, author, downloadLinks string) string {
+func buildUserMessage(title, content, fullContent, siteName, pubDate, author, downloadLinks string) string {
 	title = strings.TrimSpace(title)
-	content = strings.TrimSpace(content)
+
+	// Prefer full page content; fall back to RSS teaser.
+	body := strings.TrimSpace(fullContent)
+	if body == "" {
+		body = strings.TrimSpace(content)
+	}
+
+	// Trim body only if an explicit limit is configured.
+	// (Caller handles MaxInputChars truncation before calling this function.)
 
 	var b strings.Builder
-	b.Grow(len(title) + len(content) + len(siteName) + 512)
+	b.Grow(len(title) + len(body) + len(siteName) + 512)
 
 	b.WriteString("━━━━━━━━━ THREAT INTELLIGENCE POST ━━━━━━━━━\n")
 	fmt.Fprintf(&b, "Forum    : %s\n", siteName)
@@ -479,17 +514,21 @@ func buildUserMessage(title, content, siteName, pubDate, author, downloadLinks s
 			}
 		}
 	}
-	b.WriteString("Content  :\n")
-	if content == "" {
+	if fullContent != "" {
+		b.WriteString("Content  : [FULL PAGE — extracted via Readability]\n")
+	} else {
+		b.WriteString("Content  : [RSS TEASER]\n")
+	}
+	if body == "" {
 		b.WriteString("(no content available)\n")
 	} else {
-		b.WriteString(content)
+		b.WriteString(body)
 		b.WriteString("\n")
 	}
 
 	// Pre-extracted quantitative signals — helps LLM score accurately even when
 	// content is sparse (RSS teaser only).
-	if signals := preExtractSignals(title, content); signals != "" {
+	if signals := preExtractSignals(title, body); signals != "" {
 		b.WriteString(signals)
 		b.WriteString("\n")
 	}

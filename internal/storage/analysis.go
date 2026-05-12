@@ -39,6 +39,7 @@ type TrainingRecord struct {
 	ItemID           int64    `json:"item_id"`
 	Title            string   `json:"title"`
 	Content          string   `json:"content"`
+	FullContent      string   `json:"full_content,omitempty"` // full page Markdown when available
 	SiteName         string   `json:"site_name"`
 	Score            int      `json:"score"`
 	Category         string   `json:"category"`
@@ -257,7 +258,7 @@ func (d *DB) MarkUrgentNotified(ctx context.Context, itemIDs []int64) error {
 // results for the given time window, ordered by score descending.
 func (d *DB) ExportForTraining(ctx context.Context, since, until time.Time) ([]TrainingRecord, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT i.id, i.title, i.content, i.site_name, i.created_at,
+		SELECT i.id, i.title, i.content, i.full_content, i.site_name, i.created_at,
 		       a.score, a.category, a.tags, a.summary,
 		       a.affected_targets, a.estimated_records, a.data_types,
 		       a.is_urgent, a.confidence_level, a.reasoning, a.model_used,
@@ -285,7 +286,7 @@ func (d *DB) ExportForTraining(ctx context.Context, since, until time.Time) ([]T
 			analyzedAt time.Time
 		)
 		if err := rows.Scan(
-			&tr.ItemID, &tr.Title, &tr.Content, &tr.SiteName, &createdAt,
+			&tr.ItemID, &tr.Title, &tr.Content, &tr.FullContent, &tr.SiteName, &createdAt,
 			&tr.Score, &tr.Category, &tagsStr, &tr.Summary,
 			&targetsStr, &tr.EstimatedRecords, &typesStr,
 			&urgentInt, &tr.ConfidenceLevel, &tr.Reasoning, &tr.ModelUsed,

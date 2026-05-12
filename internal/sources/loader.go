@@ -471,13 +471,20 @@ func FetchRansomwatchPosts(ctx context.Context, client *http.Client, limit int) 
 const cyberSecOPMLURL = "https://raw.githubusercontent.com/zer0yu/CyberSecurityRSS/master/CyberSecurityRSS.opml"
 
 // Keywords to filter relevant feeds from the 1000+ OPML list.
-// Deliberately narrow — broad terms like "malware" or "infosec" pull in
-// security news sites (infosecurity-magazine, bleepingcomputer, etc.) that
-// publish analysis articles rather than actual breach data.
+// Deliberately anchored to breach/leak signal — broad terms like "malware"
+// or "infosec" pull in security news sites that publish analysis articles
+// rather than actual breach data.
 var leakKeywords = []string{
-	"breach", "data leak", "data breach", "leaked", "darkweb", "dark web",
-	"ransomware", "underground forum", "haveibeenpwned", "data dump",
-	"cybercrime", "credential", "infostealer",
+	// Core breach/leak terms
+	"breach", "data leak", "data breach", "leaked", "data dump",
+	// Dark web forum terms
+	"darkweb", "dark web", "underground forum", "cybercrime",
+	// Threat actor output
+	"ransomware", "infostealer", "stealer logs", "combo list",
+	// Data types
+	"credential", "combolist", "combo", "fullz", "doxxing",
+	// Trackers
+	"haveibeenpwned", "paste", "pastebin",
 }
 
 type opmlOutline struct {

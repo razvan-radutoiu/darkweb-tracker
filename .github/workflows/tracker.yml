@@ -1,9 +1,8 @@
 name: DarkWeb Forums Tracker
 
 "on":
-  schedule:
-    - cron: '0 * * * *'
-
+  # schedule:
+  #   - cron: '0 2 * * *'   # 每天北京时间 10:00（UTC+8）；配置好 Secrets 后取消注释
   workflow_dispatch:
     inputs:
       debug:
@@ -133,6 +132,7 @@ jobs:
         with:
           commit_message: "auto: 扫描更新 ${{ steps.run.outputs.report_time }} [skip ci]"
           file_pattern: "data_leaks.db archive/** rss/** index.html"
+          add_options: '--force'
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"
           commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"

@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "sources.yaml"
+      - "filter_rules.yaml"
+      - "archive/**"
+      - "rss/**"
+      - "index.html"
+  pull_request:
+    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "sources.yaml"
+      - "filter_rules.yaml"
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Cross-compile (linux/amd64)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o tracker-linux ./cmd/tracker
+          echo "Binary size: $(du -sh tracker-linux | cut -f1)"

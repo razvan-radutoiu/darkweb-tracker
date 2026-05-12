@@ -4,8 +4,10 @@
 package feed
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	readability "codeberg.org/readeck/go-readability/v2"
+	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/mmcdole/gofeed"
 	"golang.org/x/net/proxy"
 
@@ -32,11 +36,12 @@ type Result struct {
 type Fetcher struct {
 	parser     *gofeed.Parser
 	httpClient *http.Client
+	fetchCfg   config.FetchConfig
 	log        *slog.Logger
 }
 
 // New creates a Fetcher. Proxy priority: Tor SOCKS5 > HTTP proxy > direct.
-func New(proxyCfg config.ProxyConfig, log *slog.Logger) *Fetcher {
+func New(proxyCfg config.ProxyConfig, fetchCfg config.FetchConfig, log *slog.Logger) *Fetcher {
 	transport := buildTransport(proxyCfg, log)
 
 	client := &http.Client{
@@ -50,6 +55,7 @@ func New(proxyCfg config.ProxyConfig, log *slog.Logger) *Fetcher {
 	return &Fetcher{
 		parser:     fp,
 		httpClient: client,
+		fetchCfg:   fetchCfg,
 		log:        log,
 	}
 }
@@ -141,8 +147,19 @@ func (f *Fetcher) Fetch(ctx context.Context, ds config.DataSource) ([]storage.It
 		}
 
 		category := extractCategory(entry)
-		content := extractContent(entry)
+		content := extractRSSContent(entry) // RSS teaser, always available
 		dlLinks := extractDownloadLinks(content)
+
+		// Optionally fetch the full page content via readability + html-to-markdown.
+		var fullContent string
+		if f.fetchCfg.FullContent {
+			fc, err := f.fetchPageContent(ctx, link)
+			if err != nil {
+				f.log.Debug("full content fetch failed", "link", link, "err", err)
+			} else {
+				fullContent = fc
+			}
+		}
 
 		// Prefix title with [SiteName] for instant source identification in reports/notifications.
 		// Skip if title already starts with "[" (e.g., ransomware sentinel items already prefixed).
@@ -158,6 +175,7 @@ func (f *Fetcher) Fetch(ctx context.Context, ds config.DataSource) ([]storage.It
 			Author:        author,
 			Category:      category,
 			Content:       content,
+			FullContent:   fullContent,
 			DownloadLinks: dlLinks,
 			SiteName:      ds.Name,
 		})
@@ -168,7 +186,81 @@ func (f *Fetcher) Fetch(ctx context.Context, ds config.DataSource) ([]storage.It
 }
 
 // ---------------------------------------------------------------------------
-// Content extraction helpers
+// Full-page content extraction
+// ---------------------------------------------------------------------------
+
+// fetchPageContent fetches the linked page, extracts the main article body via
+// go-readability, then converts the result to clean Markdown using html-to-markdown.
+// This replaces the old regex-based cleanContent() approach.
+func (f *Fetcher) fetchPageContent(ctx context.Context, rawURL string) (string, error) {
+	timeout := f.fetchCfg.ContentTimeout
+	if timeout == 0 {
+		timeout = 15 * time.Second
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	// Mimic a browser to avoid trivial bot detection.
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; DarkWebTracker/1.0)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := f.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("http get: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d for %s", resp.StatusCode, rawURL)
+	}
+
+	// Cap body size to avoid reading enormous pages.
+	maxBytes := f.fetchCfg.ContentMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = 512 * 1024
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)))
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+
+	// Parse page URL for readability (used to resolve relative URLs).
+	pageURL, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse url: %w", err)
+	}
+
+	// Extract main article content via Readability.
+	article, err := readability.FromReader(bytes.NewReader(body), pageURL)
+	if err != nil {
+		return "", fmt.Errorf("readability: %w", err)
+	}
+
+	// Render the extracted article as HTML.
+	var htmlBuf bytes.Buffer
+	if err := article.RenderHTML(&htmlBuf); err != nil {
+		return "", fmt.Errorf("render html: %w", err)
+	}
+	if htmlBuf.Len() == 0 {
+		return "", fmt.Errorf("readability returned empty content")
+	}
+
+	// Convert HTML to clean Markdown.
+	md, err := htmltomarkdown.ConvertString(htmlBuf.String())
+	if err != nil {
+		return "", fmt.Errorf("html to markdown: %w", err)
+	}
+
+	return strings.TrimSpace(md), nil
+}
+
+// ---------------------------------------------------------------------------
+// RSS content extraction helpers
 // ---------------------------------------------------------------------------
 
 func extractCategory(e *gofeed.Item) string {
@@ -181,7 +273,10 @@ func extractCategory(e *gofeed.Item) string {
 	return strings.Join(cats, ", ")
 }
 
-func extractContent(e *gofeed.Item) string {
+// extractRSSContent returns the RSS teaser text from the feed entry.
+// This is the short snippet included in the RSS feed itself (not the full page).
+// Used as a fallback when full-page fetching is disabled or fails.
+func extractRSSContent(e *gofeed.Item) string {
 	raw := ""
 	switch {
 	case e.Content != "":
@@ -189,25 +284,21 @@ func extractContent(e *gofeed.Item) string {
 	case e.Description != "":
 		raw = e.Description
 	}
-	return cleanContent(raw)
+	return stripHTML(raw)
 }
 
-// Compiled regexes for content cleaning.
-var (
-	reHideBlock  = regexp.MustCompile(`(?si)<div[^>]+class="[^"]*(?:messageHide|block-mhhide)[^"]*"[^>]*>.*?</div>`)
-	reInputTag   = regexp.MustCompile(`(?i)<input[^>]*>`)
-	reReadMore   = regexp.MustCompile(`(?i)<a[^>]+>Read more</a>`)
-	reHTMLTag    = regexp.MustCompile(`<[^>]+>`)
-	reMultiSpace = regexp.MustCompile(`\s+`)
-	reLoginMsg   = regexp.MustCompile(`(?i)You must be registered for see (links|images attach)`)
-	reCyrLogin   = regexp.MustCompile(`(?si)Для просмотра скрытого содержимого вы должны.*?</div>`)
-)
+// reHTMLTag strips all HTML tags from a string.
+var reHTMLTag = regexp.MustCompile(`<[^>]+>`)
 
-func cleanContent(html string) string {
-	html = reHideBlock.ReplaceAllString(html, "")
-	html = reInputTag.ReplaceAllString(html, "")
-	html = reReadMore.ReplaceAllString(html, "")
-	html = reCyrLogin.ReplaceAllString(html, "")
+// reMultiSpace collapses consecutive whitespace into a single space.
+var reMultiSpace = regexp.MustCompile(`\s+`)
+
+// reLoginMsg removes common "login required" placeholder messages from RSS teasers.
+var reLoginMsg = regexp.MustCompile(`(?i)You must be registered for see (links|images attach)`)
+
+// stripHTML performs a minimal HTML-to-plaintext conversion for RSS teasers.
+// For full pages, use fetchPageContent() which uses readability + html-to-markdown.
+func stripHTML(html string) string {
 	text := reHTMLTag.ReplaceAllString(html, " ")
 	text = reLoginMsg.ReplaceAllString(text, "")
 	text = reMultiSpace.ReplaceAllString(text, " ")
@@ -373,6 +464,7 @@ func (f *Fetcher) fetchRansomLook(ctx context.Context, siteName string) ([]stora
 	f.log.Debug("ransomlook fetched", "posts", len(items))
 	return items, nil
 }
+
 func (f *Fetcher) fetchRansomwatch(ctx context.Context, siteName string) ([]storage.Item, error) {
 	// Only fetch posts from the last 30 days to avoid flooding the DB on first run.
 	const recentLimit = 200

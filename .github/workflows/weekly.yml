@@ -5,9 +5,9 @@
 name: DarkWeb Weekly Report
 
 on:
-  schedule:
-    - cron: '0 15 * * 5'   # 每周五 15:00 北京时间
-      timezone: 'Asia/Shanghai'
+  # schedule:
+  #   - cron: '0 7 * * 5'    # 每周五北京时间 15:00（UTC+8）；配置好 Secrets 后取消注释
+  #   timezone: 'Asia/Shanghai'
   workflow_dispatch:        # 支持手动触发
 
 permissions:
@@ -62,5 +62,6 @@ jobs:
         with:
           commit_message: "auto: 周报更新 $(date +'%Y-%m-%d') [skip ci]"
           file_pattern: "archive/Weekly_* rss/weekly_* rss/latest_weekly_rss.xml"
+          add_options: '--force'
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"

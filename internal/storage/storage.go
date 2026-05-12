@@ -19,7 +19,8 @@ type Item struct {
 	PubDate       string
 	Author        string
 	Category      string
-	Content       string
+	Content       string // RSS teaser (always available)
+	FullContent   string // full page body as Markdown (optional, requires FETCH_FULL_CONTENT)
 	DownloadLinks string
 	SiteName      string
 	CreatedAt     time.Time
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS items (
 	author         TEXT,
 	category       TEXT,
 	content        TEXT,
+	full_content   TEXT    NOT NULL DEFAULT '', -- full page body as Markdown
 	download_links TEXT,
 	site_name      TEXT    NOT NULL,
 	created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -62,6 +64,10 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 
+	// Idempotent migration: add full_content column to existing databases.
+	// SQLite ignores the error when the column already exists.
+	db.Exec(`ALTER TABLE items ADD COLUMN full_content TEXT NOT NULL DEFAULT ''`)
+
 	return &DB{db: db}, nil
 }
 
@@ -84,10 +90,10 @@ func (d *DB) Exists(ctx context.Context, link string) (bool, error) {
 func (d *DB) Insert(ctx context.Context, item Item) error {
 	_, err := d.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO items
-			(title, link, pub_date, author, category, content, download_links, site_name)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			(title, link, pub_date, author, category, content, full_content, download_links, site_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.Title, item.Link, item.PubDate, item.Author,
-		item.Category, item.Content, item.DownloadLinks, item.SiteName,
+		item.Category, item.Content, item.FullContent, item.DownloadLinks, item.SiteName,
 	)
 	if err != nil {
 		return fmt.Errorf("insert item: %w", err)
@@ -106,7 +112,7 @@ type QueryOptions struct {
 
 // List returns items matching the given options.
 func (d *DB) List(ctx context.Context, opts QueryOptions) ([]Item, error) {
-	q := `SELECT id, title, link, pub_date, author, category, content, download_links, site_name, created_at
+	q := `SELECT id, title, link, pub_date, author, category, content, full_content, download_links, site_name, created_at
 	      FROM items WHERE 1=1`
 	var args []any
 
@@ -147,7 +153,7 @@ func (d *DB) List(ctx context.Context, opts QueryOptions) ([]Item, error) {
 		var it Item
 		if err := rows.Scan(
 			&it.ID, &it.Title, &it.Link, &it.PubDate,
-			&it.Author, &it.Category, &it.Content,
+			&it.Author, &it.Category, &it.Content, &it.FullContent,
 			&it.DownloadLinks, &it.SiteName, &it.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
@@ -212,4 +218,25 @@ func (d *DB) CountBySourceAll(ctx context.Context) (map[string]int, error) {
 		result[name] = count
 	}
 	return result, rows.Err()
+}
+
+// Prune deletes items (and their analysis results via CASCADE) older than
+// retentionDays. Returns the number of rows deleted.
+// retentionDays <= 0 is a no-op.
+func (d *DB) Prune(ctx context.Context, retentionDays int) (int64, error) {
+	if retentionDays <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format(time.DateTime)
+	res, err := d.db.ExecContext(ctx,
+		`DELETE FROM items WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune items: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		// Reclaim space after large deletes.
+		d.db.ExecContext(ctx, `PRAGMA incremental_vacuum`)
+	}
+	return n, nil
 }

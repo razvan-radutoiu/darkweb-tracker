@@ -1,0 +1,429 @@
+# filter_rules.yaml — DarkWeb Forums Tracker 过滤规则配置
+#
+# 修改此文件后重启程序即可生效，无需重新编译。
+# 若此文件不存在，程序使用内置默认规则。
+#
+# 结构说明：
+#   skip_patterns  — 标题匹配任意 keyword 时：存入 DB 但跳过分析和推送
+#   named_targets  — 标题包含任意条目时：无论 skip_patterns 如何，强制发送分析
+#   rules          — 规则引擎评分配置（vendor_patterns / 站点分级 / 数据类型关键词）
+#
+# skip_patterns 和 named_targets 均做小写子串匹配（contains），不区分大小写。
+# rules.vendor_patterns 同理。
+
+# ─────────────────────────────────────────────────────────────
+# 跳过规则：低价值帖，存 DB 去重但不分析不推送
+# ─────────────────────────────────────────────────────────────
+skip_patterns:
+
+  # ── 供应商/卖家广告 ──────────────────────────────────────────
+  - { keyword: "fullz",             reason: "identity document vendor post" }
+  - { keyword: "full info",         reason: "fullz vendor post" }
+  - { keyword: "real docs",         reason: "document vendor post" }
+  - { keyword: "price from $",      reason: "vendor pricing post" }
+  - { keyword: "price from €",      reason: "vendor pricing post" }
+  - { keyword: " for sale ",        reason: "item for sale listing" }
+  - { keyword: "buy now",           reason: "vendor listing" }
+  - { keyword: "dm me",             reason: "vendor contact post" }
+  - { keyword: "contact me",        reason: "vendor contact post" }
+  - { keyword: "telegram @",        reason: "vendor contact post" }
+  - { keyword: "whatsapp:",         reason: "vendor contact post" }
+  - { keyword: "whatsapp +",        reason: "vendor contact post" }
+  - { keyword: "buy fake",          reason: "document vendor post" }
+  - { keyword: "buy real and fake", reason: "document vendor post" }
+  - { keyword: "buy diplomatic",    reason: "document vendor post" }
+  - { keyword: "buy passport",      reason: "document vendor post" }
+  - { keyword: "sell clone card",   reason: "carding vendor post" }
+  - { keyword: "sell cc ",          reason: "carding vendor post" }
+
+  # ── 破解账号售卖 ────────────────────────────────────────────
+  - { keyword: "netflix account",   reason: "cracked streaming account" }
+  - { keyword: "spotify account",   reason: "cracked streaming account" }
+  - { keyword: "disney account",    reason: "cracked streaming account" }
+  - { keyword: "hbo account",       reason: "cracked streaming account" }
+  - { keyword: "gaming account",    reason: "cracked gaming accounts" }
+  - { keyword: "cracked account",   reason: "cracked account selling" }
+  - { keyword: "verified account",  reason: "cracked account selling" }
+
+  # ── 安全新闻/分析文章（非泄露事件）──────────────────────────
+  - { keyword: " variant ",              reason: "malware analysis article" }
+  - { keyword: "android trojan",         reason: "malware analysis article" }
+  - { keyword: "vulnerability discovered", reason: "vulnerability news" }
+  - { keyword: "patch tuesday",          reason: "patch news" }
+  - { keyword: "zero-day in",            reason: "vulnerability news" }
+  - { keyword: "researchers found",      reason: "research article" }
+  - { keyword: "researchers discover",   reason: "research article" }
+
+  # ── 自我介绍/灌水帖 ─────────────────────────────────────────
+  - { keyword: "hello everyone",    reason: "introduction post" }
+  - { keyword: "hi everyone",       reason: "introduction post" }
+  - { keyword: "introduction post", reason: "introduction post" }
+  - { keyword: "new member",        reason: "introduction post" }
+  - { keyword: "i am here",         reason: "introduction post" }
+
+  # ── Combo 列表/聚合转储 ──────────────────────────────────────
+  - { keyword: "combo list",     reason: "email combo aggregation" }
+  - { keyword: "combolist",      reason: "email combo aggregation" }
+  - { keyword: "combos ",        reason: "email combo aggregation" }
+  - { keyword: "combo mixed",    reason: "email combo aggregation" }
+  - { keyword: "combo { ",       reason: "country combo list" }
+  - { keyword: "k++ ] combo",    reason: "country combo list" }
+  - { keyword: "k++ combo",      reason: "country combo list" }
+  - { keyword: "mixed combo",    reason: "combo aggregation" }
+  - { keyword: "email:pass",     reason: "email:pass combo dump" }
+  - { keyword: "mail:pass",      reason: "email:pass combo dump" }
+  - { keyword: "user:pass",      reason: "credential combo dump" }
+  - { keyword: "login:pass",     reason: "credential combo dump" }
+  - { keyword: "id:pass",        reason: "credential combo dump" }
+  - { keyword: "fresh combo",    reason: "fresh combo list" }
+  - { keyword: "free combo",     reason: "free combo list" }
+  - { keyword: "hq combo",       reason: "high-quality combo list" }
+  - { keyword: "private combo",  reason: "combo list" }
+  - { keyword: "combo pack",     reason: "combo pack aggregation" }
+  - { keyword: "collection #",   reason: "aggregate collection" }
+  - { keyword: "anti-public",    reason: "anti-public combo" }
+  - { keyword: "breach compilation", reason: "compiled breach aggregation" }
+  - { keyword: "data compilation",   reason: "compiled data aggregation" }
+  - { keyword: "mega leak",          reason: "generic mega-leak aggregation" }
+
+  # ── 破解工具/配置 ────────────────────────────────────────────
+  - { keyword: "openbullet",    reason: "cracking tool config" }
+  - { keyword: "silverbullet",  reason: "cracking tool config" }
+  - { keyword: "sentry mba",    reason: "cracking tool config" }
+  - { keyword: "hq config",     reason: "cracking tool config" }
+  - { keyword: "checker config", reason: "cracking tool config" }
+  - { keyword: "config file",   reason: "cracking config" }
+  - { keyword: "cracking tool", reason: "cracking tool" }
+  - { keyword: "brute forcer",  reason: "brute force tool" }
+  - { keyword: " checker ",     reason: "credential checker tool" }
+  - { keyword: "checker v",     reason: "credential checker tool" }
+
+  # ── 字典/彩虹表 ─────────────────────────────────────────────
+  - { keyword: "wordlist",      reason: "wordlist/dictionary file" }
+  - { keyword: "word list",     reason: "wordlist/dictionary file" }
+  - { keyword: "rainbow table", reason: "hash rainbow table" }
+  - { keyword: "dehash",        reason: "hash cracking service" }
+  - { keyword: "hash crack",    reason: "hash cracking" }
+  - { keyword: "ntlm hash",     reason: "hash dump without named org" }
+  - { keyword: "md5 hash",      reason: "hash dump without named org" }
+
+  # ── Stealer 日志（无具体受害者）─────────────────────────────
+  - { keyword: "stealer log",     reason: "infostealer logs aggregation" }
+  - { keyword: "infostealer log", reason: "infostealer logs aggregation" }
+  - { keyword: "redline log",     reason: "redline stealer logs" }
+  - { keyword: "vidar log",       reason: "vidar stealer logs" }
+  - { keyword: "raccoon log",     reason: "raccoon stealer logs" }
+  - { keyword: "fresh log",       reason: "stealer logs aggregation" }
+  - { keyword: "logs fresh",      reason: "stealer logs aggregation" }
+  - { keyword: "private logs",    reason: "stealer logs aggregation" }
+
+  # ── 泛化邮件列表 ────────────────────────────────────────────
+  - { keyword: "email list",     reason: "generic email list" }
+  - { keyword: "mail list",      reason: "generic email list" }
+  - { keyword: "email database", reason: "generic email database" }
+  - { keyword: "email leads",    reason: "email marketing leads" }
+  - { keyword: "spam list",      reason: "spam email list" }
+
+  # ── 恶意软件/工具发布 ───────────────────────────────────────
+  - { keyword: "rat release",  reason: "RAT malware release" }
+  - { keyword: "keylogger",    reason: "keylogger tool" }
+  - { keyword: "botnet",       reason: "botnet tool/panel" }
+  - { keyword: "ddos tool",    reason: "DDoS tool" }
+  - { keyword: "stresser",     reason: "stresser/booter tool" }
+  - { keyword: "crypter fud",  reason: "malware crypter" }
+
+  # ── 代理/VPN 销售 ────────────────────────────────────────────
+  - { keyword: "socks5 list", reason: "proxy list" }
+  - { keyword: "proxy list",  reason: "proxy list" }
+  - { keyword: "fresh proxy", reason: "proxy list" }
+  - { keyword: "vpn account", reason: "VPN account selling" }
+
+# ─────────────────────────────────────────────────────────────
+# 命名目标白名单：出现任意条目 → 强制进入分析流程
+# 即使标题同时命中 skip_patterns，命名目标优先
+# ─────────────────────────────────────────────────────────────
+named_targets:
+  # 勒索软件组织
+  - lockbit
+  - alphav
+  - "cl0p"
+  - clop
+  - blackcat
+  - ransomhub
+  - akira
+  - "play ransomware"
+  - "black basta"
+  - medusa
+  - 8base
+  - rhysida
+  - hunters
+  - killsec
+  - monti
+  - incransom
+  - cicada3301
+  - "fog ransomware"
+
+  # 金融/银行
+  - bank
+  - banking
+  - fintech
+  - "credit union"
+  - insurance
+  - payment
+  - broker
+  - mortgage
+  - investment
+  - financial
+  - "trading platform"
+  - visa
+  - mastercard
+  - "american express"
+  - paypal
+  - stripe
+
+  # 医疗
+  - hospital
+  - clinic
+  - medical
+  - health
+  - pharmacy
+  - "patient data"
+  - healthcare
+  - nhs
+  - medicare
+  - medicaid
+  - dental
+  - laboratory
+
+  # 政府/国家级
+  - government
+  - "ministry of"
+  - "department of"
+  - federal
+  - "national id"
+  - "national database"
+  - citizen
+  - municipality
+  - police
+  - military
+  - intelligence
+  - agency
+  - senate
+  - parliament
+  - electoral
+  - "tax authority"
+  - immigration
+  - border
+
+  # 关键基础设施
+  - "power grid"
+  - electricity
+  - utility
+  - "water treatment"
+  - pipeline
+  - airport
+  - railway
+  - metro
+  - telecom
+  - isp
+  - carrier
+
+  # 教育/研究
+  - university
+  - college
+  - "school district"
+  - "research institute"
+
+  # 高价值信号词
+  - "employee data"
+  - "customer database"
+  - "user database"
+  - "internal data"
+  - "source code"
+  - proprietary
+  - confidential
+
+# ─────────────────────────────────────────────────────────────
+# 规则引擎评分配置
+# ─────────────────────────────────────────────────────────────
+rules:
+
+  # 供应商/垃圾帖模式：匹配任意一条 → 直接返回 score=2，不进入评分流程
+  vendor_patterns:
+    - "whatsapp:"
+    - "whatsapp +"
+    - "telegram @"
+    - "telegram:"
+    - "@telegram"
+    - "buy fake"
+    - "buy real and fake"
+    - "buy diplomatic"
+    - "buy passport"
+    - "buy driver"
+    - "buy id card"
+    - "sell clone card"
+    - "sell cc "
+    - "sell cvv"
+    - "combo mixed email"
+    - "combo mixed mail"
+    - "k++ combo"
+    - "k++ ] combo"
+    - "combo { "
+    - "[ combo"
+    - "fresh combo"
+    - "free combo"
+    - "hq combo"
+    - "private combo"
+    - "combo pack"
+    - "mixed combo"
+
+  # 一级论坛（评分 +1）
+  tier1_sites:
+    - breachforum
+    - leakbase
+    - thejavasea
+    - exploit-in
+    - xss-is
+
+  # 二级论坛（仅分类标签，不加分）
+  tier2_sites:
+    - probiv
+    - darkforum
+    - altenens
+    - nulled
+    - leakforum
+    - mipped
+    - hard-tm
+    - dublikat
+    - leetforum
+    - ipbmafia
+
+  # 勒索软件相关站点（分类标签）
+  ransom_sites:
+    - ransomware
+    - ransom
+    - lockbit
+    - alphv
+    - blackcat
+
+  # 新鲜度正向信号（评分 +1）
+  fresh_positive:
+    - fresh
+    - "new"
+    - latest
+    - "2024"
+    - "2025"
+    - "2026"
+    - today
+    - just
+    - hot
+    - 0day
+
+  # 新鲜度负向信号（评分 -2）
+  fresh_negative:
+    - old
+    - "2020"
+    - "2019"
+    - "2018"
+    - "2017"
+    - "2016"
+    - "2015"
+    - "leaked in 20"
+    - "from 20"
+
+  # 数据类型关键词（命中 → 纳入类型列表，影响评分加成）
+  # 注意：使用精确子串，避免误匹配（如 "pass" 会误匹配 "passport"）
+  data_types:
+    email:
+      - "email"
+      - "e-mail"
+      - "@gmail"
+      - "@yahoo"
+      - "@hotmail"
+      - "@outlook"
+    password:
+      - "password"
+      - "passwd"
+      - "pwd"
+      - "hash"
+      - "md5"
+      - "sha1"
+      - "bcrypt"
+      - "ntlm"
+      - "plaintext"
+      - "cracked"
+    phone:
+      - "phone number"
+      - "mobile number"
+      - "telephone"
+      - "gsm"
+      - "sms code"
+    address:
+      - "home address"
+      - "physical address"
+      - "location data"
+      - "zip code"
+      - "postal code"
+    credit_card:
+      - "credit card"
+      - "cc dump"
+      - "cvv"
+      - "cvc"
+      - "fullz"
+      - "card number"
+      - "debit card"
+    ssn:
+      - "ssn"
+      - "social security"
+      - "national id number"
+      - "tax id"
+    dob:
+      - "date of birth"
+      - "birthday"
+      - "birthdate"
+      - "dob:"
+    ip:
+      - "ip address"
+      - "ip log"
+      - "ipv4"
+      - "ipv6"
+    cookie:
+      - "cookie"
+      - "session token"
+      - "auth token"
+      - "session cookie"
+    source_code:
+      - "source code"
+      - "gitlab"
+      - "repository leak"
+      - "git dump"
+    financial:
+      - "bank account"
+      - "iban"
+      - "swift code"
+      - "routing number"
+      - "account balance"
+      - "wire transfer"
+    medical:
+      - "medical record"
+      - "health record"
+      - "patient data"
+      - "diagnosis"
+      - "prescription"
+      - "hipaa"
+    government:
+      - "government database"
+      - ".gov"
+      - "military data"
+      - "dod "
+      - "nsa "
+      - "fbi "
+      - "cia "
+    # combo: 特殊标记，命中后评分上限为 4（聚合数据，非新鲜泄露）
+    combo:
+      - "combolist"
+      - "combo list"
+      - "mail:pass"
+      - "email:pass"
+      - "user:pass"
+      - "login:pass"

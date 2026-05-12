@@ -33,6 +33,7 @@ type Scheduler struct {
 	notifier  *notify.Multi
 	generator *report.Generator
 	analyzer  analyzer.ItemAnalyzer
+	filter    *filter.Filter
 	log       *slog.Logger
 
 	// Dedup guards: prevent daily/weekly reports from firing multiple times
@@ -49,12 +50,13 @@ func New(
 	notifier *notify.Multi,
 	gen *report.Generator,
 	az analyzer.ItemAnalyzer,
+	f *filter.Filter,
 	log *slog.Logger,
 ) *Scheduler {
 	return &Scheduler{
 		cfg: cfg, sources: sources, fetcher: fetcher,
 		db: db, notifier: notifier, generator: gen,
-		analyzer: az, log: log,
+		analyzer: az, filter: f, log: log,
 	}
 }
 
@@ -200,6 +202,15 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		s.lastWeeklyDate = thisWeek
 	}
 
+	// ── Data TTL: prune old records ──────────────────────────────────────────
+	if s.cfg.RetentionDays > 0 {
+		if n, err := s.db.Prune(ctx, s.cfg.RetentionDays); err != nil {
+			s.log.Error("prune failed", "err", err)
+		} else if n > 0 {
+			s.log.Info("pruned old records", "deleted", n, "retention_days", s.cfg.RetentionDays)
+		}
+	}
+
 	return nil
 }
 
@@ -278,9 +289,7 @@ func (s *Scheduler) analyzeWorker(
 		total.Add(1)
 
 		// Fast title pre-filter — free, runs in microseconds.
-		// Skips combo lists, cracking tools, generic email dumps etc.
-		// Items with named victims/orgs always pass through.
-		fr := filter.QuickFilter(item.Title, item.SiteName)
+		fr := s.filter.QuickFilter(item.Title, item.SiteName)
 		if fr.Action == filter.ActionSkip {
 			s.log.Debug("title filter: skipped",
 				"title", truncate(item.Title, 80),
@@ -296,6 +305,7 @@ func (s *Scheduler) analyzeWorker(
 				ID:            item.ID,
 				Title:         item.Title,
 				Content:       item.Content,
+				FullContent:   item.FullContent,
 				SiteName:      item.SiteName,
 				PubDate:       item.PubDate,
 				Author:        item.Author,
@@ -355,7 +365,7 @@ func (s *Scheduler) analyzeWorker(
 		}
 
 		s.notifier.Send(ctx, notify.Message{
-			Title:            fmt.Sprintf("[%s] %s", item.SiteName, item.Title),
+			Title:            item.Title,
 			Body:             res.Summary,
 			Link:             item.Link,
 			SiteName:         item.SiteName,
@@ -555,11 +565,14 @@ func isWeeklyDay(target time.Weekday) bool {
 	return beijingTime().Weekday() == target
 }
 
+// truncate cuts s to at most n runes (not bytes), appending "…" if truncated.
+// Using rune slicing prevents broken multi-byte characters (e.g. CJK, Cyrillic).
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string(runes[:n]) + "…"
 }
 
 func analysisRowToResult(row storage.AnalysisRow) *analyzer.AnalysisResult {

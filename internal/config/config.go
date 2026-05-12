@@ -27,6 +27,7 @@ type Config struct {
 	LLM          LLMConfig             `yaml:"llm"`
 	Sources      SourcesConfig         `yaml:"sources"`
 	Web          WebConfig             `yaml:"web"`
+	Fetch        FetchConfig           `yaml:"fetch"`
 
 	// MaxItemAgeDays is the maximum age of a post's pub_date (in days) for it
 	// to be eligible for AI analysis and push notifications.
@@ -34,6 +35,26 @@ type Config struct {
 	// silently skipped — no analysis, no push.
 	// Default: 7. Set to 0 to disable the filter (push all new items).
 	MaxItemAgeDays int `yaml:"max_item_age_days"` // MAX_ITEM_AGE_DAYS
+
+	// RetentionDays is how many days to keep items in the database.
+	// 0 = keep forever. Default 90.
+	RetentionDays int `yaml:"retention_days"` // RETENTION_DAYS
+}
+
+// FetchConfig controls optional full-page content fetching.
+type FetchConfig struct {
+	// FullContent enables fetching the linked page and extracting the main article body.
+	// Extracted content is stored as full_content and passed to the LLM instead of
+	// the RSS teaser, significantly improving analysis quality.
+	FullContent bool `yaml:"full_content"` // FETCH_FULL_CONTENT
+
+	// ContentTimeout is the per-page HTTP timeout when fetching full content.
+	// Default 15s.
+	ContentTimeout time.Duration `yaml:"content_timeout"` // FETCH_CONTENT_TIMEOUT
+
+	// ContentMaxBytes caps the response body read to avoid huge pages.
+	// Default 512KB. 0 = no limit.
+	ContentMaxBytes int `yaml:"content_max_bytes"` // FETCH_CONTENT_MAX_BYTES
 }
 
 // WebConfig controls the built-in HTTP web interface.
@@ -248,7 +269,9 @@ type rawConfig struct {
 	LLM          LLMConfig             `yaml:"llm"`
 	Sources      SourcesConfig         `yaml:"sources"`
 	Web          WebConfig             `yaml:"web"`
+	Fetch        FetchConfig           `yaml:"fetch"`
 	MaxItemAgeDays int                 `yaml:"max_item_age_days"`
+	RetentionDays  int                 `yaml:"retention_days"`
 }
 
 // DingTalk returns the DingTalk config (stored separately from PushConfig).
@@ -288,7 +311,9 @@ func Load(path string) (*Config, error) {
 		LLM:            raw.LLM,
 		Sources:        raw.Sources,
 		Web:            raw.Web,
+		Fetch:          raw.Fetch,
 		MaxItemAgeDays: raw.MaxItemAgeDays,
+		RetentionDays:  raw.RetentionDays,
 	}
 
 	// Apply LLM defaults.
@@ -334,6 +359,16 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.MaxItemAgeDays == 0 {
 		cfg.MaxItemAgeDays = 7 // default: only analyze/push posts from last 7 days
+	}
+	if cfg.RetentionDays == 0 {
+		cfg.RetentionDays = 90 // default: keep 90 days of data
+	}
+	// FetchConfig defaults.
+	if cfg.Fetch.ContentTimeout == 0 {
+		cfg.Fetch.ContentTimeout = 15 * time.Second
+	}
+	if cfg.Fetch.ContentMaxBytes == 0 {
+		cfg.Fetch.ContentMaxBytes = 512 * 1024 // 512 KB
 	}
 
 	// Validate data sources have required fields.
@@ -497,6 +532,16 @@ func applyEnv(r *rawConfig) {
 
 	// Feed age filter
 	envInt("MAX_ITEM_AGE_DAYS", &r.MaxItemAgeDays)
+	envInt("RETENTION_DAYS", &r.RetentionDays)
+
+	// Full-content fetch
+	envBool("FETCH_FULL_CONTENT", &r.Fetch.FullContent)
+	envInt("FETCH_CONTENT_MAX_BYTES", &r.Fetch.ContentMaxBytes)
+	if v := os.Getenv("FETCH_CONTENT_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			r.Fetch.ContentTimeout = d
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

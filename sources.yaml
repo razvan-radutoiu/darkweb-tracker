@@ -6,275 +6,21 @@
 version: "1"
 updated: "2026-05-11"
 
-# 注：RansomLook API (570+ 团伙) 和 TweetFeed RSS 已通过代码内置自动加载，
-# 无需在此手动列出。
+# 注：以下数据源已通过代码内置自动加载，无需在此手动列出：
+#   - ransomware.live API (实时受害者)
+#   - ransomwatch/posts.json (实时受害者)
+#   - ransomlook.io API (570+ 勒索软件团伙)
+#   - TweetFeed RSS (IOC 聚合)
+#   - HIBP, DDoSecrets, RansomFeed (直接 RSS)
+#   - deepdarkCTI forum.md / ransomware_gang.md / markets.md (动态探活)
 
 sources:
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # TIER 1 — 顶级数据泄露源（BreachForums 系 + 直接数据交易）
-  # 特征：帖子直接包含数据库/凭证文件，价值最高
+  # TIER 1 — 顶级数据泄露源（直接包含数据库/凭证文件，价值最高）
   # ═══════════════════════════════════════════════════════════════════════════
 
-  # BreachForums — 全球最活跃的数据泄露论坛
-  - name: "breachforums"
-    rss_url: "https://breachforums.st/syndication.php?limit=50"
-    enabled: true
-    tags: ["database", "credentials", "pii", "tier1"]
-
-  - name: "breachforums-rs"
-    rss_url: "https://breachforums.rs/syndication.php?limit=50"
-    enabled: true
-    tags: ["database", "credentials", "pii", "tier1"]
-
-  - name: "breachforums-cx"
-    rss_url: "https://breachforums.cx/syndication.php?limit=50"
-    enabled: true
-    tags: ["database", "credentials", "pii", "tier1"]
-
-  - name: "exploit-in"
-    rss_url: "https://www.exploit.in/rss/new_topics.xml"
-    enabled: true
-    tags: ["russian", "database", "credentials", "tier1"]
-
-  - name: "xss-is"
-    rss_url: "https://xss.is/forums/index.rss"
-    enabled: true
-    tags: ["russian", "database", "credentials", "tier1"]
-
-  - name: "leakbase"
-    rss_url: "https://leakbase.la/forums/-/index.rss"
-    enabled: true
-    tags: ["database", "credentials", "pii", "tier1"]
-
-  - name: "thejavasea"
-    rss_url: "https://thejavasea.com/forums/-/index.rss"
-    enabled: true
-    tags: ["database", "credentials", "leak", "tier1"]
-
-  # 新增 TIER1 —————————————————————————————————————————————————
-  - name: "pwnforums"
-    rss_url: "https://pwnforums.st/syndication.php?limit=50"
-    enabled: true
-    tags: ["database", "credentials", "pii", "tier1"]
-    note: "继承 BreachForums 用户群，高活跃度"
-
-  - name: "dumpforums"
-    rss_url: "https://dumpforums.to/syndication.php?limit=50"
-    enabled: true
-    tags: ["database", "credentials", "russian", "tier1"]
-    note: "俄罗斯背景，侧重企业内网 Dump 数据"
-
-  - name: "eleaks"
-    rss_url: "https://eleaks.to/forums/-/index.rss"
-    enabled: true
-    tags: ["database", "credentials", "leak", "tier1"]
-    note: "专门的泄露数据分享平台，分类清晰"
-
-  - name: "breachboard"
-    rss_url: "https://breachboard.zip/syndication.php?limit=50"
-    enabled: true
-    tags: ["database", "credentials", "tier1"]
-    note: "2025-2026 新兴活跃泄露论坛"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # TIER 2 — 高价值数据交易 / 凭证论坛
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - name: "probiv"
-    rss_url: "https://probiv.one/forums/-/index.rss"
-    enabled: true
-    tags: ["russian", "credentials", "doxxing", "tier2"]
-
-  - name: "darkforums"
-    rss_url: "https://darkforums.su/syndication.php?limit=50"
-    enabled: true
-    tags: ["database", "credentials", "tier2"]
-
-  - name: "altenens"
-    rss_url: "https://altenens.is/forums/-/index.rss"
-    enabled: true
-    tags: ["credentials", "combo", "database", "tier2"]
-
-  - name: "nulledbb"
-    rss_url: "https://nulledbb.com/syndication.php?limit=50"
-    enabled: true
-    tags: ["cracking", "credentials", "combo", "tier2"]
-
-  - name: "leakforum"
-    rss_url: "https://leakforum.io/syndication.php?limit=50"
-    enabled: true
-    tags: ["database", "credentials", "tier2"]
-
-  - name: "mipped"
-    rss_url: "https://mipped.com/f/forums/-/index.rss"
-    enabled: true
-    tags: ["database", "credentials", "tier2"]
-
-  - name: "hard-tm"
-    rss_url: "https://hard-tm.su/forums/-/index.rss"
-    enabled: true
-    tags: ["database", "combo", "tier2"]
-
-  - name: "dublikat"
-    rss_url: "https://at.dublikat.club/forums/-/index.rss"
-    enabled: true
-    tags: ["credentials", "tier2"]
-
-  - name: "leetforums"
-    rss_url: "https://leetforums.cc/forums/-/index.rss"
-    enabled: true
-    tags: ["credentials", "leak", "tier2"]
-
-  - name: "in4bz"
-    rss_url: "https://in4.bz/forums/-/index.rss"
-    enabled: true
-    tags: ["credentials", "leak", "tier2"]
-
-  - name: "ipbmafia"
-    rss_url: "https://ipbmafia.ru/rss/1-temy.xml/"
-    enabled: true
-    tags: ["russian", "credentials", "malware", "tier2"]
-
-  # 新增 TIER2 —————————————————————————————————————————————————
-  - name: "lolz-guru"
-    rss_url: "https://lolz.guru/forums/-/index.rss"
-    enabled: true
-    tags: ["russian", "credentials", "stealer", "tier2"]
-    note: "极活跃俄语论坛，Infostealer 产出丰富"
-
-  - name: "nulledx"
-    rss_url: "https://nulledx.to/syndication.php?limit=50"
-    enabled: true
-    tags: ["cracking", "credentials", "combo", "tier2"]
-    note: "Nulled 变体，账号/combo 泄露"
-
-  - name: "dataforums"
-    rss_url: "https://dataforums.co/forums/-/index.rss"
-    enabled: true
-    tags: ["database", "cloud", "tier2"]
-    note: "侧重云存储/S3 Bucket 泄露"
-
-  - name: "breachstars"
-    rss_url: "https://breachstars.io/forums/-/index.rss"
-    enabled: true
-    tags: ["database", "credentials", "tier2"]
-    note: "大型泄露事件索引和分发"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # TIER 3 — Carding / 金融数据
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - name: "cardforum"
-    rss_url: "https://cardforum.cc/syndication.php?limit=50"
-    enabled: true
-    tags: ["carding", "financial", "tier3"]
-
-  - name: "ascarding"
-    rss_url: "https://ascarding.net/forums/-/index.rss"
-    enabled: true
-    tags: ["carding", "financial", "tier3"]
-
-  - name: "bdfclub"
-    rss_url: "https://bdfclub.com/forums/-/index.rss"
-    enabled: true
-    tags: ["carding", "financial", "tier3"]
-
-  - name: "carders-biz"
-    rss_url: "https://carders.biz/forums/-/index.rss"
-    enabled: true
-    tags: ["carding", "financial", "tier3"]
-
-  - name: "ezcarder"
-    rss_url: "https://ezcarder.is/forums/-/index.rss"
-    enabled: true
-    tags: ["carding", "financial", "tier3"]
-
-  - name: "mmgp"
-    rss_url: "https://mmgp.com/forums/-/index.rss"
-    enabled: true
-    tags: ["russian", "financial", "crypto", "tier3"]
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # TIER 4 — Hacking / Exploit 论坛（间接带数据）
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - name: "bhcforums"
-    rss_url: "https://bhcforums.cc/syndication.php?limit=50"
-    enabled: true
-    tags: ["hacking", "credentials", "tier4"]
-
-  - name: "spear"
-    rss_url: "https://spear.cx/syndication.php?limit=50"
-    enabled: true
-    tags: ["hacking", "exploit", "tier4"]
-
-  - name: "xreactor"
-    rss_url: "https://xreactor.org/forums/-/index.rss"
-    enabled: true
-    tags: ["hacking", "exploit", "tier4"]
-
-  - name: "darkpro"
-    rss_url: "https://darkpro.net/forums/-/index.rss"
-    enabled: true
-    tags: ["hacking", "credentials", "tier4"]
-
-  - name: "gerki"
-    rss_url: "https://forum.gerki.ws/forums/-/index.rss"
-    enabled: true
-    tags: ["credentials", "database", "tier4"]
-
-  - name: "blackbones"
-    rss_url: "https://blackbones.net/forums/-/index.rss"
-    enabled: true
-    tags: ["credentials", "carding", "tier4"]
-
-  - name: "xssf"
-    rss_url: "https://xssf.net/feed/"
-    enabled: true
-    tags: ["hacking", "exploit", "tier4"]
-
-  - name: "seopirat"
-    rss_url: "https://seopirat.club/forums/-/index.rss"
-    enabled: true
-    tags: ["russian", "credentials", "tier4"]
-
-  - name: "chitachok"
-    rss_url: "https://chitachok.ru/forums/-/index.rss"
-    enabled: true
-    tags: ["russian", "credentials", "tier4"]
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # 暂时无法访问（保留待恢复）
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - name: "htdark"
-    rss_url: "https://htdark.com/forums/-/index.rss"
-    enabled: false
-    note: "403"
-
-  - name: "niflheim"
-    rss_url: "https://niflheim.world/forums/-/index.rss"
-    enabled: false
-    note: "403"
-
-  - name: "sinister"
-    rss_url: "https://sinister.ly/syndication.php?fid=9&limit=50"
-    enabled: false
-    note: "DNS 失败"
-
-  - name: "darkforums-st"
-    rss_url: "https://darkforums.st/forums/-/index.rss"
-    enabled: false
-    note: "已迁移至 darkforums.su"
-
-  - name: "exploitforums"
-    rss_url: "https://exploitforums.net/syndication.php?limit=50"
-    enabled: false
-    note: "频繁离线"
-
-  # BreachForums — 全球最活跃的数据泄露论坛
-  # 注意：域名频繁迁移，多镜像并行监控
+  # BreachForums — 全球最活跃的数据泄露论坛，多域名并行监控
   - name: "breachforums"
     rss_url: "https://breachforums.st/syndication.php?limit=50"
     enabled: true
@@ -320,6 +66,34 @@ sources:
     enabled: true
     tags: ["database", "credentials", "leak", "tier1"]
     note: "100 items/feed，活跃度高"
+
+  # PwnForums — 继承 BreachForums 用户群，高活跃度
+  - name: "pwnforums"
+    rss_url: "https://pwnforums.st/syndication.php?limit=50"
+    enabled: true
+    tags: ["database", "credentials", "pii", "tier1"]
+    note: "继承 BreachForums 用户群，高活跃度"
+
+  # DumpForums — 俄罗斯背景，侧重企业内网 Dump 数据
+  - name: "dumpforums"
+    rss_url: "https://dumpforums.to/syndication.php?limit=50"
+    enabled: true
+    tags: ["database", "credentials", "russian", "tier1"]
+    note: "俄罗斯背景，侧重企业内网 Dump 数据"
+
+  # Eleaks — 专门的泄露数据分享平台，分类清晰
+  - name: "eleaks"
+    rss_url: "https://eleaks.to/forums/-/index.rss"
+    enabled: true
+    tags: ["database", "credentials", "leak", "tier1"]
+    note: "专门的泄露数据分享平台，分类清晰"
+
+  # BreachBoard — 2025-2026 新兴活跃泄露论坛
+  - name: "breachboard"
+    rss_url: "https://breachboard.zip/syndication.php?limit=50"
+    enabled: true
+    tags: ["database", "credentials", "tier1"]
+    note: "2025-2026 新兴活跃泄露论坛"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # TIER 2 — 高价值数据交易 / 凭证论坛
@@ -390,6 +164,34 @@ sources:
     enabled: true
     tags: ["russian", "credentials", "malware", "tier2"]
     note: ""
+
+  # Lolz.guru — 极活跃俄语论坛，Infostealer 产出丰富
+  - name: "lolz-guru"
+    rss_url: "https://lolz.guru/forums/-/index.rss"
+    enabled: true
+    tags: ["russian", "credentials", "stealer", "tier2"]
+    note: "极活跃俄语论坛，Infostealer 产出丰富"
+
+  # NulledX — Nulled 变体，账号/combo 泄露
+  - name: "nulledx"
+    rss_url: "https://nulledx.to/syndication.php?limit=50"
+    enabled: true
+    tags: ["cracking", "credentials", "combo", "tier2"]
+    note: "Nulled 变体，账号/combo 泄露"
+
+  # DataForums — 侧重云存储/S3 Bucket 泄露
+  - name: "dataforums"
+    rss_url: "https://dataforums.co/forums/-/index.rss"
+    enabled: true
+    tags: ["database", "cloud", "tier2"]
+    note: "侧重云存储/S3 Bucket 泄露"
+
+  # BreachStars — 大型泄露事件索引和分发
+  - name: "breachstars"
+    rss_url: "https://breachstars.io/forums/-/index.rss"
+    enabled: true
+    tags: ["database", "credentials", "tier2"]
+    note: "大型泄露事件索引和分发"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # TIER 3 — Carding / 金融数据

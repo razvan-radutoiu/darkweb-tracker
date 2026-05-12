@@ -126,7 +126,19 @@ func (h *HybridAnalyzer) analyzeOne(ctx context.Context, item BatchItem) BatchRe
 	}
 
 	// Should never reach here if the last provider is always RulesEngine.
-	// Return rules-engine result as emergency fallback.
-	res := ScoreItem(item.Title, item.Content, item.SiteName)
-	return BatchResult{ID: item.ID, Result: res}
+	// Emergency fallback: return a generic low-score result.
+	return BatchResult{
+		ID: item.ID,
+		Result: &AnalysisResult{
+			Score:            1,
+			Category:         "other",
+			Tags:             []string{"fallback"},
+			Summary:          "所有分析提供者均失败，返回默认低分结果。",
+			AffectedTargets:  []string{},
+			EstimatedRecords: -1,
+			IsUrgent:         false,
+			ConfidenceLevel:  "low",
+			Reasoning:        "HybridAnalyzer: all providers exhausted",
+		},
+	}
 }

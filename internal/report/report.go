@@ -4,11 +4,13 @@ package report
 import (
 	"context"
 	"fmt"
+	"html/template" // was text/template — XSS fix
 	"os"
 	"path/filepath"
 	"strings"
-	"text/template"
 	"time"
+
+	"github.com/gorilla/feeds"
 
 	"darkweb-tracker/internal/storage"
 )
@@ -278,15 +280,18 @@ func (g *Generator) GenerateRSS(ctx context.Context, feedType string) (string, e
 		return "", fmt.Errorf("unknown feed type: %s", feedType)
 	}
 
-	xml := buildRSS(feedTitle, feedDesc, feedLink, g.repoBaseURL, items)
+	xmlStr, err := buildRSS(feedTitle, feedDesc, feedLink, g.repoBaseURL, items)
+	if err != nil {
+		return "", fmt.Errorf("build rss: %w", err)
+	}
 	outPath := filepath.Join(g.rssDir, filename)
-	if err := os.WriteFile(outPath, []byte(xml), 0o644); err != nil {
+	if err := os.WriteFile(outPath, []byte(xmlStr), 0o644); err != nil {
 		return "", fmt.Errorf("write rss: %w", err)
 	}
 
 	// Also write as "latest_*".
 	latestPath := filepath.Join(g.rssDir, latestFile)
-	if err := os.WriteFile(latestPath, []byte(xml), 0o644); err != nil {
+	if err := os.WriteFile(latestPath, []byte(xmlStr), 0o644); err != nil {
 		return "", fmt.Errorf("write latest rss: %w", err)
 	}
 
@@ -342,45 +347,34 @@ func buildWeeklyMarkdown(start, end string, items []storage.Item, bySource map[s
 }
 
 // ---------------------------------------------------------------------------
-// RSS XML builder
+// RSS XML builder — uses gorilla/feeds for correct escaping and RFC compliance
 // ---------------------------------------------------------------------------
 
-func buildRSS(title, desc, selfLink, siteURL string, items []storage.Item) string {
-	var sb strings.Builder
-	sb.WriteString(`<?xml version='1.0' encoding='UTF-8'?>` + "\n")
-	sb.WriteString(`<rss version='2.0' xmlns:atom='http://www.w3.org/2005/Atom'>` + "\n")
-	sb.WriteString("  <channel>\n")
-	sb.WriteString(fmt.Sprintf("    <title>%s</title>\n", xmlEscape(title)))
-	sb.WriteString(fmt.Sprintf("    <description>%s</description>\n", xmlEscape(desc)))
-	sb.WriteString(fmt.Sprintf("    <link>%s</link>\n", siteURL))
-	sb.WriteString(fmt.Sprintf("    <atom:link href='%s' rel='self' type='application/rss+xml'/>\n", selfLink))
-	sb.WriteString("    <language>zh-CN</language>\n")
-	sb.WriteString(fmt.Sprintf("    <lastBuildDate>%s</lastBuildDate>\n", time.Now().UTC().Format(time.RFC1123Z)))
-	sb.WriteString("    <ttl>60</ttl>\n\n")
-
-	for _, it := range items {
-		pub := it.CreatedAt.UTC().Format(time.RFC1123Z)
-		sb.WriteString("    <item>\n")
-		sb.WriteString(fmt.Sprintf("      <title>%s</title>\n", xmlEscape(it.Title)))
-		sb.WriteString(fmt.Sprintf("      <link>%s</link>\n", it.Link))
-		sb.WriteString(fmt.Sprintf("      <description>%s</description>\n", xmlEscape(it.Title)))
-		sb.WriteString(fmt.Sprintf("      <pubDate>%s</pubDate>\n", pub))
-		sb.WriteString(fmt.Sprintf("      <guid isPermaLink='false'>%s_%s</guid>\n",
-			it.Link, it.CreatedAt.Format("20060102150405")))
-		sb.WriteString("    </item>\n")
+// buildRSS generates a valid RSS 2.0 feed from the given items.
+// Returns the XML string or an error.
+func buildRSS(title, desc, selfLink, siteURL string, items []storage.Item) (string, error) {
+	feed := &feeds.Feed{
+		Title:       title,
+		Link:        &feeds.Link{Href: siteURL, Rel: "alternate"},
+		Description: desc,
+		Created:     time.Now(),
 	}
 
-	sb.WriteString("  </channel>\n</rss>")
-	return sb.String()
-}
+	for _, it := range items {
+		body := it.Content
+		if it.FullContent != "" {
+			body = it.FullContent
+		}
+		feed.Items = append(feed.Items, &feeds.Item{
+			Title:       it.Title,
+			Link:        &feeds.Link{Href: it.Link},
+			Description: body,
+			Created:     it.CreatedAt,
+			Id:          fmt.Sprintf("%s_%s", it.Link, it.CreatedAt.Format("20060102150405")),
+		})
+	}
 
-func xmlEscape(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, "\"", "&quot;")
-	s = strings.ReplaceAll(s, "'", "&apos;")
-	return s
+	return feed.ToRss()
 }
 
 // ---------------------------------------------------------------------------

@@ -1,17 +1,22 @@
-# SQLite 数据库 — 本地运行时忽略，GitHub Actions 会提交
-# data_leaks.db  ← 取消注释可让本地也忽略
+# SQLite 数据库 — GitHub Actions 运行后提交，本地测试产物不上传
+data_leaks.db
+
+# 生成的报告 / RSS / 首页 — 由 GitHub Actions 生成并提交
+archive/
+rss/
+index.html
 
 # 编译产物
 tracker
 tracker.exe
 tracker-linux
 
-# 部署包（编译产物 + 脚本，不需要追踪）
+# 部署包
 tracker-deploy/
 tracker-docker/
 *.zip
 
-# 训练数据导出文件
+# 训练数据导出
 training_data.jsonl
 *.jsonl
 

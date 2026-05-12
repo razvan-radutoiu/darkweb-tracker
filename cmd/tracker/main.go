@@ -22,8 +22,10 @@ import (
 	"darkweb-tracker/internal/analyzer"
 	"darkweb-tracker/internal/config"
 	"darkweb-tracker/internal/feed"
+	"darkweb-tracker/internal/filter"
 	"darkweb-tracker/internal/notify"
 	"darkweb-tracker/internal/report"
+	appRules "darkweb-tracker/internal/rules"
 	"darkweb-tracker/internal/scheduler"
 	"darkweb-tracker/internal/sources"
 	"darkweb-tracker/internal/storage"
@@ -42,13 +44,14 @@ var Version = "dev"
 func main() {
 	// ── Flags ────────────────────────────────────────────────────────────────
 	var (
-		cfgFile    = flag.String("config", "config.yaml", "path to config file")
-		dbFile     = flag.String("db", "data_leaks.db", "SQLite database path")
-		archiveDir = flag.String("archive", "archive", "directory for reports")
-		rssDir     = flag.String("rss", "rss", "directory for RSS XML files")
-		once       = flag.Bool("once", false, "run one poll cycle then exit")
-		debug      = flag.Bool("debug", false, "enable debug logging")
-		ver        = flag.Bool("version", false, "print version and exit")
+		cfgFile     = flag.String("config", "config.yaml", "path to config file")
+		rulesFile   = flag.String("rules", "filter_rules.yaml", "path to filter rules file")
+		dbFile      = flag.String("db", "data_leaks.db", "SQLite database path")
+		archiveDir  = flag.String("archive", "archive", "directory for reports")
+		rssDir      = flag.String("rss", "rss", "directory for RSS XML files")
+		once        = flag.Bool("once", false, "run one poll cycle then exit")
+		debug       = flag.Bool("debug", false, "enable debug logging")
+		ver         = flag.Bool("version", false, "print version and exit")
 
 		// Export sub-command flags.
 		export      = flag.Bool("export-training", false, "export training dataset as JSONL and exit")
@@ -118,11 +121,14 @@ func main() {
 	// prevents the discovery phase from blocking startup for minutes.
 	directClient := &http.Client{Timeout: 20 * time.Second}
 
-	// ── Notifiers ────────────────────────────────────────────────────────────
-	notifiers := buildNotifiers(cfg, httpClient, log)
+	// Notification client: respects HTTP proxy if configured, but never uses Tor.
+	// Push channels (Telegram, Discord, etc.) call clearnet APIs — routing them
+	// through Tor adds latency, breaks when Tor is restarting, and causes DNS
+	// resolution failures (e.g. "lookup tor: server misbehaving").
+	notifyClient := buildNotifyClient(cfg.Proxy)
 
-	// ── AI Analyzer ──────────────────────────────────────────────────────────
-	az := buildAnalyzer(cfg, log)
+	// ── Notifiers ────────────────────────────────────────────────────────────
+	notifiers := buildNotifiers(cfg, notifyClient, log)
 
 	// ── Source loading (remote > local > builtin seeds) ──────────────────────
 	srcLoader := sources.New(cfg.Sources, directClient, log)
@@ -136,13 +142,29 @@ func main() {
 		log.Debug("source", "name", ds.Name, "url", ds.RSSURL)
 	}
 
+	// ── Filter rules (filter_rules.yaml) ─────────────────────────────────────
+	// Falls back to built-in defaults when the file doesn't exist.
+	fr, err := appRules.Load(*rulesFile)
+	if err != nil {
+		log.Error("load filter rules", "err", err)
+		os.Exit(1)
+	}
+	log.Info("filter rules loaded",
+		"file", *rulesFile,
+		"skip_patterns", len(fr.SkipPatterns),
+		"named_targets", len(fr.NamedTargets),
+		"vendor_patterns", len(fr.Rules.VendorPatterns),
+	)
+
 	// ── Other components ─────────────────────────────────────────────────────
-	gen := report.New(db, *archiveDir, *rssDir,
+	gen     := report.New(db, *archiveDir, *rssDir,
 		"https://github.com/your-username/darkweb-tracker")
-	fetcher := feed.New(cfg.Proxy, log)
+	fetcher := feed.New(cfg.Proxy, cfg.Fetch, log)
+	flt     := filter.New(fr)
+	az      := buildAnalyzer(cfg, fr, log)
 
 	// ── Scheduler ────────────────────────────────────────────────────────────
-	sched := scheduler.New(cfg, activeSources, fetcher, db, notifiers, gen, az, log)
+	sched := scheduler.New(cfg, activeSources, fetcher, db, notifiers, gen, az, flt, log)
 
 	// ── Run ──────────────────────────────────────────────────────────────────
 	runCtx, cancel := signal.NotifyContext(context.Background(),
@@ -276,6 +298,25 @@ func buildHTTPClient(proxyCfg config.ProxyConfig) *http.Client {
 	}
 }
 
+// buildNotifyClient builds an HTTP client for push notification channels.
+// Unlike buildHTTPClient, it never routes traffic through Tor — notification
+// APIs (Telegram, Discord, DingTalk, Feishu) are clearnet services.
+// A non-Tor HTTP/HTTPS proxy is still respected when proxy.enabled = true.
+func buildNotifyClient(proxyCfg config.ProxyConfig) *http.Client {
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	if proxyCfg.Enabled && proxyCfg.HTTP != "" {
+		transport.Proxy = http.ProxyFromEnvironment
+	}
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+	}
+}
+
 func buildNotifiers(cfg *config.Config, client *http.Client, log *slog.Logger) *notify.Multi {
 	var ns []notify.Notifier
 
@@ -327,7 +368,7 @@ func buildNotifiers(cfg *config.Config, client *http.Client, log *slog.Logger) *
 // If no LLM is configured at all, only the RulesEngine runs.
 // The HybridAnalyzer tries each provider per item; on any error it moves
 // to the next provider automatically — no manual intervention needed.
-func buildAnalyzer(cfg *config.Config, log *slog.Logger) analyzer.ItemAnalyzer {
+func buildAnalyzer(cfg *config.Config, fr *appRules.FilterRules, log *slog.Logger) analyzer.ItemAnalyzer {
 	type entry = struct {
 		Name     string
 		Analyzer analyzer.ItemAnalyzer
@@ -389,7 +430,7 @@ func buildAnalyzer(cfg *config.Config, log *slog.Logger) analyzer.ItemAnalyzer {
 	// Always append rules engine as the final fallback
 	providers = append(providers, entry{
 		Name:     "rules-engine",
-		Analyzer: analyzer.NewRulesEngine(log),
+		Analyzer: analyzer.NewRulesEngine(fr, log),
 	})
 
 	if len(providers) == 1 {
