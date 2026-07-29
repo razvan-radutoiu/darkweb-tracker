@@ -1,20 +1,20 @@
 name: DarkWeb Forums Tracker
 
 "on":
-  # schedule:
-  #   - cron: '0 2 * * *'   # 每天北京时间 10:00（UTC+8）；配置好 Secrets 后取消注释
+  schedule:
+    - cron: '0 20 * * 5'
   workflow_dispatch:
     inputs:
       debug:
-        description: '开启调试日志'
+        description: 'Enable debug logging'
         type: boolean
         default: false
       skip_ai:
-        description: '跳过 AI 分析（节省 API 配额）'
+        description: 'Skip AI analysis (save API quota)'
         type: boolean
         default: false
       skip_tor:
-        description: '跳过 Tor（调试用，直连抓取）'
+        description: 'Skip Tor (for debugging, connect directly)'
         type: boolean
         default: false
 
@@ -25,19 +25,16 @@ concurrency:
 permissions:
   contents: write
   models: read
-  pages: write
-  id-token: write
 
 jobs:
   track:
-    name: 抓取 & 分析
+    name: Scrape & Analyze
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
     outputs:
       has_changes: ${{ steps.commit.outputs.changes_detected }}
       report_date: ${{ steps.run.outputs.report_date }}
-      has_reports: ${{ steps.check_reports.outputs.has_reports }}
 
     steps:
       - name: Checkout
@@ -46,11 +43,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 拉取最新数据
+      - name: Pull latest data
         run: |
-          git pull --rebase origin main || echo "::warning::拉取失败，继续使用本地版本"
+          git pull --rebase origin main || echo "::warning::Pull failed, continuing with local version"
 
-      - name: 安装并启动 Tor
+      - name: Install and start Tor
         if: ${{ inputs.skip_tor != true }}
         run: |
           sudo apt-get install -y -q tor netcat-openbsd
@@ -59,15 +56,15 @@ jobs:
 
           sudo systemctl restart tor
 
-          echo "⏳ 等待 Tor SOCKS5 端口就绪..."
+          echo "⏳ Waiting for Tor SOCKS5 port to be ready..."
           for i in $(seq 1 90); do
             if nc -z 127.0.0.1 9050 2>/dev/null; then
-              echo "✅ Tor SOCKS5 端口已开放（${i}s）"
+              echo "✅ Tor SOCKS5 port is open (${i}s)"
               break
             fi
             sleep 1
             if [ "$i" -eq 90 ]; then
-              echo "::warning::Tor 未能在 90 秒内就绪，将尝试直连"
+              echo "::warning::Tor did not become ready within 90 seconds, will try direct connection"
             fi
           done
 
@@ -75,12 +72,12 @@ jobs:
 
           TOR_IP=$(curl -s --max-time 30 --socks5-hostname 127.0.0.1:9050 https://api.ipify.org 2>/dev/null || echo "unknown")
           REAL_IP=$(curl -s --max-time 10 https://api.ipify.org 2>/dev/null || echo "unknown")
-          echo "🧅 Tor 出口 IP : ${TOR_IP}"
-          echo "📍 真实 IP     : ${REAL_IP}"
+          echo "🧅 Tor exit IP : ${TOR_IP}"
+          echo "📍 Real IP     : ${REAL_IP}"
           if [ "$TOR_IP" != "$REAL_IP" ] && [ "$TOR_IP" != "unknown" ]; then
-            echo "✅ Tor 匿名代理验证通过"
+            echo "✅ Tor anonymous proxy verified"
           else
-            echo "::warning::Tor IP 未变化或无法连接"
+            echo "::warning::Tor IP unchanged or unable to connect"
             sudo systemctl status tor --no-pager || true
           fi
 
@@ -118,19 +115,19 @@ jobs:
           echo "report_time=$(date +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_OUTPUT
           ARGS="--once --config config.yaml --db data_leaks.db"
           if [ "${{ inputs.debug }}" = "true" ]; then ARGS="$ARGS --debug"; fi
-          echo "::group::Tracker 运行日志"
+          echo "::group::Tracker run log"
           ./tracker $ARGS
           echo "::endgroup::"
 
-      - name: 关闭 Tor
+      - name: Stop Tor
         if: ${{ always() && inputs.skip_tor != true }}
         run: sudo systemctl stop tor 2>/dev/null || true
 
-      - name: Commit 结果
+      - name: Commit results
         id: commit
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "auto: 扫描更新 ${{ steps.run.outputs.report_time }} [skip ci]"
+          commit_message: "auto: scan update ${{ steps.run.outputs.report_time }} [skip ci]"
           file_pattern: "data_leaks.db archive/** rss/** index.html"
           add_options: '--force'
           commit_user_name: "github-actions[bot]"
@@ -138,48 +135,8 @@ jobs:
           commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
           skip_dirty_check: false
 
-      - name: 检查报告目录
-        id: check_reports
-        run: |
-          if [ -d "archive" ] && [ "$(ls -A archive 2>/dev/null)" ]; then
-            echo "has_reports=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_reports=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: 准备 Pages 部署目录
-        if: steps.check_reports.outputs.has_reports == 'true'
-        run: |
-          mkdir -p _site
-          if [ -f "index.html" ]; then
-            cp index.html _site/index.html
-          else
-            echo "<html><body><p>首次运行后报告将显示在此处</p></body></html>" > _site/index.html
-          fi
-          [ -d archive ] && cp -r archive _site/archive
-          [ -d rss ]     && cp -r rss _site/rss
-
-      - name: Upload Pages artifact
-        if: steps.check_reports.outputs.has_reports == 'true'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: './_site'
-
-  deploy-pages:
-    name: 部署报告到 GitHub Pages
-    needs: track
-    if: needs.track.outputs.has_reports == 'true'
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
-
   cleanup:
-    name: 清理旧运行记录
+    name: Clean up old workflow runs
     needs: track
     if: always()
     runs-on: ubuntu-latest
